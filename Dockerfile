@@ -17,6 +17,7 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY shared ./shared
+RUN mkdir -p /app/data && chown node:node /app/data
 USER node
 EXPOSE 3000
 CMD ["node", "server/index.js"]

@@ -1,0 +1,178 @@
+{
+  "version": 2,
+  "source": "Original Crossline geometry; see src/weapon-models.js, character-models.js, equipment.js",
+  "models": [
+    {
+      "id": "glock18",
+      "bytes": 63904
+    },
+    {
+      "id": "usps",
+      "bytes": 66056
+    },
+    {
+      "id": "p2000",
+      "bytes": 63908
+    },
+    {
+      "id": "dualberettas",
+      "bytes": 237412
+    },
+    {
+      "id": "p250",
+      "bytes": 63940
+    },
+    {
+      "id": "fiveseven",
+      "bytes": 63840
+    },
+    {
+      "id": "tec9",
+      "bytes": 107556
+    },
+    {
+      "id": "cz75",
+      "bytes": 81028
+    },
+    {
+      "id": "deagle",
+      "bytes": 63004
+    },
+    {
+      "id": "r8",
+      "bytes": 47576
+    },
+    {
+      "id": "mac10",
+      "bytes": 94340
+    },
+    {
+      "id": "mp9",
+      "bytes": 100256
+    },
+    {
+      "id": "mp7",
+      "bytes": 116604
+    },
+    {
+      "id": "mp5sd",
+      "bytes": 115056
+    },
+    {
+      "id": "ump45",
+      "bytes": 101888
+    },
+    {
+      "id": "p90",
+      "bytes": 99304
+    },
+    {
+      "id": "bizon",
+      "bytes": 97008
+    },
+    {
+      "id": "nova",
+      "bytes": 108288
+    },
+    {
+      "id": "mag7",
+      "bytes": 106320
+    },
+    {
+      "id": "sawedoff",
+      "bytes": 101104
+    },
+    {
+      "id": "xm1014",
+      "bytes": 109528
+    },
+    {
+      "id": "m249",
+      "bytes": 132704
+    },
+    {
+      "id": "negev",
+      "bytes": 130560
+    },
+    {
+      "id": "ak47",
+      "bytes": 124880
+    },
+    {
+      "id": "m4a4",
+      "bytes": 109232
+    },
+    {
+      "id": "m4a1s",
+      "bytes": 119088
+    },
+    {
+      "id": "galil",
+      "bytes": 110592
+    },
+    {
+      "id": "famas",
+      "bytes": 81780
+    },
+    {
+      "id": "sg553",
+      "bytes": 101388
+    },
+    {
+      "id": "aug",
+      "bytes": 108600
+    },
+    {
+      "id": "ssg08",
+      "bytes": 113508
+    },
+    {
+      "id": "awp",
+      "bytes": 113168
+    },
+    {
+      "id": "g3sg1",
+      "bytes": 103428
+    },
+    {
+      "id": "scar20",
+      "bytes": 103596
+    },
+    {
+      "id": "knife",
+      "bytes": 25600
+    },
+    {
+      "id": "he",
+      "bytes": 40144
+    },
+    {
+      "id": "flash",
+      "bytes": 79976
+    },
+    {
+      "id": "smoke",
+      "bytes": 20036
+    },
+    {
+      "id": "bomb",
+      "bytes": 66860
+    },
+    {
+      "id": "soldier",
+      "bytes": 438176
+    },
+    {
+      "id": "soldier-lod",
+      "bytes": 409984
+    },
+    {
+      "id": "terrorist",
+      "bytes": 358656
+    },
+    {
+      "id": "terrorist-lod",
+      "bytes": 341572
+    }
+  ]
+}

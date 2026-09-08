@@ -1,79 +1,260 @@
-import * as THREE from 'three';
-import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js';
-import {mergeGeometries} from 'three/addons/utils/BufferGeometryUtils.js';
-import {WEAPONS} from '../shared/game.js';
-import {surface} from './materials.js';
-const materials=new Map(),geometries=new Map();
-export function material(color,metalness=0){const key=`${color}-${metalness}`;if(!materials.has(key))materials.set(key,new THREE.MeshStandardMaterial({color,roughness:.8-metalness*.5,metalness}));return materials.get(key);}
-const mat=v=>typeof v==='number'?material(v):v;
-function geo(key,make){if(!geometries.has(key))geometries.set(key,make());return geometries.get(key);}
-export function box(parent,x,y,z,w,h,d,color,metalness=0,r=0){const g=r?geo(`r${w}/${h}/${d}/${r}`,()=>new RoundedBoxGeometry(w,h,d,2,Math.min(r,w/3,h/3,d/3))):geo('box',()=>new THREE.BoxGeometry());const m=new THREE.Mesh(g,typeof color==='number'?material(color,metalness):color);m.position.set(x,y,z);if(!r)m.scale.set(w,h,d);m.castShadow=m.receiveShadow=true;parent.add(m);return m;}
-export function cylinder(parent,x,y,z,r,length,color,alongZ=false,top=r){const m=new THREE.Mesh(geo(`c${r}/${length}/${top}`,()=>new THREE.CylinderGeometry(top,r,length,16)),mat(color));m.position.set(x,y,z);if(alongZ)m.rotation.x=Math.PI/2;m.castShadow=m.receiveShadow=true;parent.add(m);return m;}
-export function ellipsoid(parent,x,y,z,w,h,d,color){const m=new THREE.Mesh(geo('sphere',()=>new THREE.SphereGeometry(1,20,14)),mat(color));m.position.set(x,y,z);m.scale.set(w,h,d);m.castShadow=m.receiveShadow=true;parent.add(m);return m;}
-// Contoured garment rings avoid disconnected spherical limbs. Subtle radial folds
-// provide a continuous cloth silhouette at the elbow, thigh and ankle.
-export function garment(parent,x,y,z,w,h,d,color){
-  const profile=[[0,-1],[.58,-.98],[.79,-.86],[.85,-.62],[.92,-.35],[1,0],[.96,.32],[.85,.68],[.65,.9],[0,1]];
-  const key='cloth';const geometry=geo(key,()=>{const g=new THREE.LatheGeometry(profile.map(([r,y])=>new THREE.Vector2(r,y)),20);const p=g.attributes.position;for(let i=0;i<p.count;i++){const v=new THREE.Vector3().fromBufferAttribute(p,i),fold=1+Math.sin(v.y*24+Math.atan2(v.z,v.x)*3)*.027;v.x*=fold;v.z*=fold;p.setXYZ(i,v.x,v.y,v.z);}g.computeVertexNormals();return g;});
-  const m=new THREE.Mesh(geometry,mat(color));m.userData.highGeometry=geometry;m.userData.lowGeometry=geo('cloth-low',()=>new THREE.LatheGeometry(profile.map(([r,y])=>new THREE.Vector2(r,y)),8));m.position.set(x,y,z);m.scale.set(w,h,d);m.castShadow=m.receiveShadow=true;parent.add(m);return m;
+import * as THREE from "three";
+import { WEAPONS } from "../shared/weapons.js";
+import { TEAMS } from "../shared/teams.js";
+import { instance } from "./assets.js";
+import {
+  radialTexture,
+  joint,
+  garment,
+  material,
+  disposeModel,
+} from "./geometry.js";
+import { glove } from "./character-models.js";
+export { material, radialTexture, disposeModel };
+export const makeGrenade = (kind = "he") => instance(kind);
+export function makeGun(id, firstPerson = false) {
+  const g = instance(id),
+    muzzle = g.getObjectByName("muzzle"),
+    flash = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: radialTexture("flash"),
+        color: 0xffd29b,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+  flash.scale.set(0.27, 0.27, 1);
+  flash.visible = false;
+  flash.userData.ownedMaterial = true;
+  if (muzzle) {
+    muzzle.add(flash);
+  } else g.add(flash);
+  const magazines = [],
+    bolts = [];
+  g.traverse((o) => {
+    if (o.name === "magazine") magazines.push(o);
+    if (o.name === "bolt") bolts.push(o);
+  });
+  const support = joint(g, 0, 0, 0);
+  let supportRest;
+  if (firstPerson) {
+    const pistol = WEAPONS[id].type === "PISTOL",
+      equipment = ["GRENADE", "OBJECTIVE"].includes(WEAPONS[id].type);
+    glove(g, 0.018, -0.157, 0.14);
+    garment(
+      g,
+      0.1,
+      -0.24,
+      0.36,
+      0.067,
+      0.23,
+      0.073,
+      material(0x879975),
+    ).rotation.set(Math.PI / 2, 0, 0.26);
+    support.position.set(
+      equipment ? -0.17 : pistol ? 0.01 : -0.06,
+      equipment ? -0.04 : pistol ? -0.21 : -0.085,
+      equipment ? 0 : pistol ? 0.14 : -0.3,
+    );
+    supportRest = support.position.clone();
+    glove(support, 0, 0, 0);
+    garment(
+      support,
+      -0.074,
+      -0.072,
+      0.14,
+      0.06,
+      0.19,
+      0.066,
+      material(0x82956d),
+    ).rotation.set(Math.PI / 2, 0, -0.55);
+    if (id === "dualberettas") support.position.set(-0.13, -0.145, 0.14);
+    g.traverse((o) => {
+      o.layers.set(1);
+      if (o.isMesh) o.castShadow = o.receiveShadow = false;
+    });
+    flash.layers.set(1);
+  }
+  g.userData = {
+    flash,
+    magazines,
+    bolts,
+    pump: g.getObjectByName("pump"),
+    support,
+    supportRest,
+    draw: 1,
+    led: g.getObjectByName("led"),
+  };
+  return g;
 }
-export function joint(parent,x,y,z){const g=new THREE.Group();g.position.set(x,y,z);parent.add(g);return g;}
-// Merge each rigid joint independently, preserving articulation with fewer draws.
-export function bake(group){
-  for(const child of [...group.children])if(child.isGroup)bake(child);
-  const batches=new Map();for(const m of [...group.children])if(m.isMesh&&!m.userData.dynamic&&!m.userData.lowGeometry){m.updateMatrix();const a=batches.get(m.material)||[];a.push(m);batches.set(m.material,a);}
-  for(const [material,meshes] of batches){if(meshes.length<2)continue;const parts=meshes.map(m=>(m.geometry.index?m.geometry.toNonIndexed():m.geometry.clone()).applyMatrix4(m.matrix));const geometry=mergeGeometries(parts);parts.forEach(g=>g.dispose());if(!geometry)continue;const merged=new THREE.Mesh(geometry,material);merged.castShadow=merged.receiveShadow=true;merged.userData.ownedGeometry=true;group.add(merged);meshes.forEach(m=>{group.remove(m);if(m.userData.ownedGeometry)m.geometry.dispose();});}
-}
-export function disposeModel(group){group.traverse(o=>{if(o.userData.ownedGeometry)o.geometry?.dispose();if(o.userData.ownedMaterial)o.material?.dispose();});}
-function silhouette(parent,points,thickness,material){const shape=new THREE.Shape();points.forEach(([z,y],i)=>i?shape.lineTo(z,y):shape.moveTo(z,y));shape.closePath();const g=new THREE.ExtrudeGeometry(shape,{depth:thickness,bevelEnabled:true,bevelSegments:2,steps:1,bevelSize:.005,bevelThickness:.003});g.rotateY(-Math.PI/2);g.translate(thickness/2,0,0);const m=new THREE.Mesh(g,material);m.castShadow=true;m.userData.ownedGeometry=true;parent.add(m);return m;}
-function hand(parent,x,y,z){const g=joint(parent,x,y,z),glove=surface('leather',0x68715e);ellipsoid(g,0,0,0,.049,.063,.044,glove);for(let i=0;i<4;i++){box(g,-.03+i*.02,-.032,-.032,.017,.075,.029,glove,0,.009).rotation.x=-.3;box(g,-.03+i*.02,.017,-.038,.016,.019,.019,surface('rubber',0x707866),0,.006);}ellipsoid(g,.047,0,-.014,.019,.039,.021,glove);return g;}
-export function makeGrenade(){const g=new THREE.Group();ellipsoid(g,0,0,0,.095,.13,.095,surface('gun',0x738151));for(let i=0;i<4;i++){const ring=new THREE.Mesh(geo('grenadeRing',()=>new THREE.TorusGeometry(.09,.006,5,18)),material(0x263125));ring.rotation.x=Math.PI/2;ring.position.y=-.07+i*.046;g.add(ring);}cylinder(g,0,.137,0,.035,.035,0x252d27);box(g,.049,.09,0,.017,.19,.042,0x979982,.7,.007);const pin=new THREE.Mesh(geo('pin',()=>new THREE.TorusGeometry(.029,.004,5,12)),material(0xb2b4a0,.75));pin.position.set(-.04,.16,0);g.add(pin);bake(g);return g;}
-const radials=new Map();
-export function radialTexture(kind){if(radials.has(kind))return radials.get(kind);const c=document.createElement('canvas');c.width=c.height=128;const x=c.getContext('2d'),gradient=x.createRadialGradient(64,64,0,64,64,64);gradient.addColorStop(0,kind==='impact'?'rgba(9,9,8,.9)':'rgba(255,255,255,.9)');gradient.addColorStop(.18,kind==='impact'?'rgba(10,10,9,.8)':'rgba(255,230,160,.8)');gradient.addColorStop(1,'rgba(100,100,90,0)');x.fillStyle=gradient;x.fillRect(0,0,128,128);if(kind==='impact'){x.strokeStyle='rgba(35,30,24,.65)';for(let i=0;i<11;i++){x.beginPath();x.moveTo(64,64);x.lineTo(64+Math.sin(i*12)*48,64+Math.cos(i*12)*48);x.stroke();}}const tex=new THREE.CanvasTexture(c);radials.set(kind,tex);return tex;}
-export function makeGun(id,firstPerson=false){
-  const g=new THREE.Group(),w=WEAPONS[id],metal=surface('gun',0xb5b8b2),steel=surface('steel',0x949c99),rubber=surface('rubber',0x929b8a),furniture=id==='vektor'?surface('wood',0xc18e5c):surface('gun',w.color);
-  const pistol=id==='pistol',sniper=id==='longshot',shotgun=id==='breaker',knife=id==='knife';const magazine=joint(g,0,0,0),bolt=joint(g,0,0,0),support=joint(g,0,0,0);let supportRest;
-  if(knife){silhouette(g,[[-.16,.05],[-.48,.065],[-.66,-.04],[-.18,-.045]],.022,steel);box(g,0,0,-.1,.12,.02,.045,steel,0,.006);box(g,0,0,.01,.065,.075,.24,rubber,0,.018);for(let i=0;i<6;i++)box(g,0,0,-.06+i*.03,.073,.08,.01,metal,0,.003);for(let i=0;i<8;i++)box(g,0,.056,-.2-i*.022,.026,.017,.011,metal);}
-  else{
-    silhouette(g,[[.19,.075],[-.24,.07],[-.27,-.045],[-.05,-.08],[.02,-.13],[.17,-.065]],pistol?.074:.1,metal);box(g,0,.078,pistol?-.04:-.22,pistol?.077:.105,pistol?.085:.07,pistol?.31:.43,steel,0,.012);box(g,0,-.145,.11,.075,.22,.104,rubber,0,.017).rotation.x=-.28;
-    const guard=new THREE.Mesh(geo('guard',()=>new THREE.TorusGeometry(.062,.009,6,16)),metal);guard.scale.set(.55,.85,1);guard.rotation.y=Math.PI/2;guard.position.set(0,-.103,-.003);g.add(guard);box(g,0,-.091,-.005,.013,.065,.017,steel,0,.006).rotation.x=-.2;
-    const muzzle=pistol?-.285:sniper?-.92:shotgun?-.79:-.7;cylinder(g,0,.047,(muzzle-.2)/2,pistol?.015:.019,Math.abs(muzzle+.2),metal,true);cylinder(g,0,.047,muzzle,.026,.085,steel,true);cylinder(g,0,.047,muzzle-.046,.015,.002,0x080d0e,true);for(let i=0;i<4&&!pistol;i++)box(g,.022,.052,muzzle+i*.014,.008,.014,.006,0x101719);
-    box(bolt,.055,.047,.01,.009,.058,.115,0x0c1416,0,.004);box(bolt,.063,.046,-.01,.012,.023,.07,steel,0,.003);cylinder(bolt,.085,.043,.035,.013,.054,metal);
-    if(pistol){box(bolt,0,.087,-.026,.08,.09,.3,metal,0,.01);for(let i=0;i<7;i++)box(bolt,.042,.09,.018+i*.012,.004,.055,.004,steel);box(magazine,0,-.26,.135,.082,.025,.11,metal,0,.008);}
-    else{
-      silhouette(g,[[.2,.055],[.34,.09],[.58,.065],[.6,-.19],[.53,-.2],[.26,-.07]],.095,furniture);box(g,0,-.06,.595,.12,.27,.035,rubber,0,.012);box(g,0,.021,-.35,.124,.12,.24,furniture,0,.023);
-      for(let i=0;i<9;i++){box(g,0,.131,-.32+i*.049,.122,.016,.025,metal,0,.002);if(i<6)for(const s of [-1,1])box(g,s*.061,.021,-.45+i*.035,.006,.04,.021,0x10191a,0,.005);}
-      if(shotgun){cylinder(g,0,-.015,-.43,.025,.65,metal,true);for(let i=0;i<10;i++)box(g,0,-.005,-.5+i*.02,.138,.13,.009,rubber,0,.004);cylinder(magazine,.05,-.06,-.04,.013,.062,0xb29c65,true);}
-      else{silhouette(magazine,[[.02,-.075],[-.096,-.075],[-.12,-.21],[-.08,sniper?-.22:-.37],[.035,sniper?-.22:-.34],[.02,-.17]],.067,metal);for(let i=0;i<3;i++)for(const s of [-1,1])box(magazine,s*.037,sniper?-.155:-.225,-.055+i*.027,.008,sniper?.1:.23,.011,steel,0,.003).rotation.x=id==='vektor'?-.15:0;}
-      if(sniper){cylinder(g,0,.231,-.06,.049,.36,metal,true);cylinder(g,0,.231,-.275,.073,.12,metal,true);cylinder(g,0,.231,.14,.06,.08,metal,true);cylinder(g,0,.231,-.338,.063,.003,material(0x215065,.9),true);cylinder(g,0,.291,-.04,.024,.038,steel);for(const z of [-.16,.075])box(g,0,.155,z,.063,.115,.047,metal,0,.005);}
-      else{cylinder(g,0,.167,-.46,.035,.024,metal,true);box(g,0,.161,-.46,.014,.049,.028,steel);box(g,0,.154,.06,.11,.03,.025,metal);}
+export function animateGun(
+  g,
+  id,
+  reload,
+  kick,
+  dt = 1 / 60,
+  action = "idle",
+  actionTime = 0,
+) {
+  const u = g.userData,
+    w = WEAPONS[id],
+    progress = reload > 0 ? 1 - reload / w.reload : 0,
+    drop =
+      progress > 0.1 && progress < 0.74
+        ? Math.sin(((progress - 0.1) / 0.64) * Math.PI)
+        : 0;
+  for (const m of u.magazines) {
+    m.position.y = -drop * 0.38;
+    m.rotation.x = drop * 0.23;
+  }
+  for (const b of u.bolts) b.position.z = kick * 0.065;
+  if (u.pump) u.pump.position.z = kick * 0.09;
+  if (u.supportRest) {
+    u.support.position.copy(u.supportRest);
+    u.support.position.y -= drop * 0.22;
+    u.support.position.z += drop * 0.24;
+    if (action === "throw") {
+      u.support.position.y -= 0.1;
+      u.support.position.z += actionTime * 0.4;
     }
-    for(const z of [-.14,.12])for(const s of [-1,1])cylinder(g,s*.056,0,z,.009,.006,steel).rotation.z=Math.PI/2;
   }
-  const flash=new THREE.Mesh(geo('flash',()=>new THREE.PlaneGeometry(.28,.28)),new THREE.MeshBasicMaterial({map:radialTexture('flash'),color:0xffd09a,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}));flash.userData.dynamic=flash.userData.ownedMaterial=true;flash.position.set(0,.047,pistol?-.34:sniper?-1:shotgun?-.86:-.77);flash.visible=false;g.add(flash);
-  if(firstPerson){hand(g,.018,-.16,.135);garment(g,.12,-.265,.37,.075,.23,.085,surface('camo',0xb3b6a1,2)).rotation.set(Math.PI/2,0,.3);support.position.set(pistol?.015:-.06,pistol?-.18:-.07,pistol?.2:-.32);supportRest=support.position.clone();hand(support,0,0,0);garment(support,-.09,-.055,.13,.065,.20,.067,surface('fabric',0x9aab82,2)).rotation.set(Math.PI/2,0,-.6);}
-  bake(g);g.userData={flash,magazine,bolt,support,supportRest};if(firstPerson)g.traverse(o=>{o.layers.set(1);if(o.isMesh)o.castShadow=o.receiveShadow=false;});return g;
+  u.draw = Math.max(0, u.draw - dt * 4.5);
+  if (u.led) u.led.visible = Math.sin(performance.now() / 160) > 0;
 }
-export function animateGun(g,id,reload,kick){const u=g.userData,progress=reload>0?1-reload/WEAPONS[id].reload:0,drop=progress>.12&&progress<.72?Math.sin((progress-.12)/.6*Math.PI):0;u.magazine.position.y=-drop*.4;u.magazine.rotation.x=drop*.25;u.bolt.position.z=kick*.07;if(u.supportRest){u.support.position.copy(u.supportRest);u.support.position.y-=drop*.21;u.support.position.z+=drop*.25;}}
-export function makePlayer(name,team){
-  const root=new THREE.Group(),body=joint(root,0,0,0),uniform=surface('camo',team==='red'?0xc6b39b:0x8faaa9,2),gear=surface('fabric',0x8a9576),dark=surface('rubber',0x697366),skin=material(0xb88a67),band=material(team==='red'?0xa33d35:0x3379a4);
-  garment(body,0,1.19,0,.235,.32,.135,uniform);ellipsoid(body,0,.89,0,.215,.16,.145,uniform);box(body,0,1.25,-.124,.395,.38,.087,gear,0,.045);box(body,0,1.24,.155,.34,.43,.17,gear,0,.06);
-  for(const side of [-1,1]){box(body,side*.16,1.44,0,.065,.055,.31,gear,0,.015);box(body,side*.22,1.18,.08,.095,.19,.1,gear,0,.017);}
-  box(body,0,.924,0,.46,.052,.302,dark,0,.018);box(body,0,.924,-.166,.074,.05,.015,0x999b82,.7,.005);for(let i=-1;i<=1;i++){box(body,i*.115,1.14,-.193,.102,.18,.065,gear,0,.012);box(body,i*.115,1.23,-.225,.085,.045,.014,dark,0,.005);}
-  for(let row=0;row<3;row++)for(let col=-2;col<=2;col++)box(body,col*.066,1.35-row*.035,-.177,.054,.013,.012,gear);
-  cylinder(body,-.19,1.5,.08,.009,.23,0x252c27);box(body,-.19,1.365,.14,.075,.12,.055,dark,0,.01);const grenade=makeGrenade();grenade.scale.setScalar(.7);grenade.position.set(.245,1.02,-.05);body.add(grenade);
-  const head=joint(body,0,1.64,0);cylinder(head,0,-.145,0,.069,.14,skin);const faceGeometry=geo('face',()=>{const fg=new THREE.SphereGeometry(1,40,32),p=fg.attributes.position;for(let i=0;i<p.count;i++){let x=p.getX(i)*.116,y=p.getY(i)*.16,z=p.getZ(i)*.106;if(y<-.04)x*=1+(y+.04)*1.8;if(z<0){const nose=Math.exp(-((x/.018)**2)-((y+.012)/.039)**2)*.035;const brow=Math.exp(-(((y-.039)/.013)**2))*.009;const mouth=Math.exp(-((x/.041)**2)-((y+.067)/.009)**2)*.004;z-=nose+brow;z+=mouth;}p.setXYZ(i,x,y,z);}fg.computeVertexNormals();return fg;});const face=new THREE.Mesh(faceGeometry,skin);face.position.z=-.005;head.add(face);face.castShadow=true;
-  for(const s of [-1,1]){ellipsoid(head,s*.119,-.012,0,.023,.045,.023,skin);box(head,s*.046,.028,-.11,.05,.009,.01,0x4a3529,0,.004);ellipsoid(head,s*.046,.013,-.112,.017,.005,.004,0xaaa895);ellipsoid(head,s*.046,.013,-.119,.005,.004,.003,0x2a302d);}box(head,0,-.073,-.11,.041,.006,.006,0x654936,0,.002);
-  const helmet=new THREE.Mesh(geo('helmet',()=>new THREE.SphereGeometry(1,24,12,0,Math.PI*2,0,Math.PI*.59)),gear);helmet.scale.set(.14,.128,.145);helmet.position.set(0,.062,.01);head.add(helmet);helmet.castShadow=true;box(head,0,.095,-.134,.042,.041,.024,dark,0,.006);for(const s of [-1,1]){box(head,s*.103,-.065,-.017,.011,.12,.012,gear,0,.003).rotation.z=s*.3;ellipsoid(head,s*.137,-.006,.025,.027,.055,.04,dark);}
-  const legs=[],knees=[],arms=[],elbows=[];
-  for(const s of [-1,1]){
-    const leg=joint(body,s*.125,.885,0);garment(leg,0,-.19,0,.107,.235,.111,uniform);box(leg,s*.083,-.18,.016,.052,.155,.12,gear,0,.013);const knee=joint(leg,0,-.4,0);garment(knee,0,-.17,.015,.083,.203,.09,uniform);box(knee,0,-.025,-.081,.112,.135,.052,dark,0,.027);box(knee,0,-.367,-.04,.165,.135,.29,surface('leather',0x777462),0,.045);box(knee,0,-.425,-.04,.174,.033,.30,dark,0,.008);for(let i=0;i<4;i++)box(knee,0,-.307-i*.016,-.096,.084,.007,.055,dark,0,.002);legs.push(leg);knees.push(knee);
-    const arm=joint(body,s*.275,1.415,0);garment(arm,0,-.137,-.04,.085,.18,.085,uniform);box(arm,s*.056,-.085,-.009,.037,.088,.127,band,0,.008);const elbow=joint(arm,0,-.24,-.07);ellipsoid(elbow,s*-.015,-.055,-.125,.063,.07,.157,uniform);hand(elbow,s*-.04,-.065,-.255);arms.push(arm);elbows.push(elbow);
+export function makePlayer(name, team, lowDetail = false) {
+  const root = instance(TEAMS[team].model + (lowDetail ? "-lod" : "")),
+    find = (n) => root.getObjectByName(n),
+    body = find("body"),
+    mixer = new THREE.AnimationMixer(root),
+    actions = {};
+  for (const clip of root.animations) {
+    actions[clip.name] = mixer.clipAction(clip);
+    actions[clip.name].play();
+    actions[clip.name].setEffectiveWeight(clip.name === "idle" ? 1 : 0);
   }
-  for(const [side,color] of [[-1,0xa3aaa1],[1,0x718565]]){const can=joint(body,side*.205,.96,.15);cylinder(can,0,0,0,.033,.14,surface('steel',color));cylinder(can,0,.08,0,.028,.02,0x313b32);box(can,side*.027,.04,0,.012,.12,.035,0x717a6b,.6,.003);box(can,0,-.01,-.034,.042,.035,.005,side===1?0xa28b52:0x9cabad);}
-  const weaponPivot=joint(body,.18,1.13,-.31);weaponPivot.scale.setScalar(.8);bake(body);
-  const c=document.createElement('canvas');c.width=512;c.height=80;const ctx=c.getContext('2d');ctx.fillStyle='rgba(8,15,18,.7)';ctx.roundRect(5,5,502,68,12);ctx.fill();ctx.font='600 34px Arial';ctx.textAlign='center';ctx.fillStyle=team==='red'?'#ffa295':'#9cdaff';ctx.fillText(name,256,50);const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;const label=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,depthTest:true,transparent:true}));label.position.y=2.08;label.scale.set(1.3,.203,1);root.add(label);
-  const lodMeshes=[];body.traverse(m=>{if(m.userData.lowGeometry)lodMeshes.push(m);});root.userData={lodMeshes,body,head,legs,knees,arms,elbows,weaponPivot,label,gun:null,weapon:null,death:0,flashAt:0,labelTexture:texture};return root;
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 80;
+  const x = c.getContext("2d");
+  x.fillStyle = "rgba(11,35,38,.7)";
+  x.roundRect(4, 4, 504, 70, 12);
+  x.fill();
+  x.font = "600 32px Arial";
+  x.textAlign = "center";
+  x.fillStyle = TEAMS[team].color;
+  x.fillText(name, 256, 49);
+  const texture = new THREE.CanvasTexture(c);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const label = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: texture, depthTest: true }),
+  );
+  label.position.y = 2.14;
+  label.scale.set(1.3, 0.2, 1);
+  root.add(label);
+  root.userData = {
+    lowDetail,
+    body,
+    head: find("head"),
+    legs: [find("leg0"), find("leg1")],
+    knees: [find("knee0"), find("knee1")],
+    arms: [find("arm0"), find("arm1")],
+    elbows: [find("elbow0"), find("elbow1")],
+    weaponPivot: find("weaponPivot"),
+    label,
+    labelTexture: texture,
+    gun: null,
+    weapon: null,
+    death: 0,
+    flashAt: 0,
+    crouch: 0,
+    land: 0,
+    wasGrounded: true,
+    mixer,
+    actions,
+    locomotion: 0,
+    lodMeshes: [],
+  };
+  return root;
 }
-export function animatePlayer(m,p,t,dt){const u=m.userData,speed=Math.hypot(p.vx,p.vz),stride=Math.min(.7,speed*.095),cycle=t*(speed>6?13:10),c=p.crouch?1:0;u.body.position.y=-c*.48+(p.grounded?Math.abs(Math.sin(cycle))*.015*speed/5:0);u.body.rotation.x=c*.2;u.legs.forEach((leg,i)=>{leg.rotation.x=Math.sin(cycle+i*Math.PI)*stride-c*.85;u.knees[i].rotation.x=Math.max(0,-Math.sin(cycle+i*Math.PI))*.55+c*1.55+(p.grounded?0:.45);});u.head.rotation.x=-p.pitch*.35;u.weaponPivot.rotation.x=p.pitch;u.weaponPivot.position.y=1.13-c*.04;u.arms[0].rotation.set(-p.pitch*.5,0,.07);u.arms[1].rotation.set(-p.pitch*.5,0,-.15);u.elbows[0].rotation.y=-.55;u.elbows[1].rotation.y=.1;u.arms[0].rotation.x+=p.reload>0?Math.sin(t*5)*.35:0;
-  if(p.hp<=0){u.death=Math.min(1,u.death+dt*2.6);u.body.rotation.z=u.death*1.49;u.body.position.y=-u.death*.08;u.label.visible=false;u.legs.forEach(l=>l.rotation.x=.3);}else{u.body.rotation.z=0;u.label.visible=true;u.label.position.y=c?1.57:2.08;}if(u.gun){u.gun.userData.flash.visible=t<u.flashAt&&u.weapon!=='knife';animateGun(u.gun,u.weapon,p.reload,t<u.flashAt?1:0);}}
+export function animatePlayer(m, p, t, dt) {
+  const u = m.userData,
+    speed = Math.hypot(p.vx, p.vz),
+    blend = 1 - Math.exp(-12 * dt),
+    running = speed > 6.4,
+    walk = p.grounded && p.hp > 0 ? Math.min(1, speed / 2) : 0;
+  for (const [name, a] of Object.entries(u.actions)) {
+    const target =
+      name === "idle"
+        ? 1 - walk
+        : name === "run"
+          ? walk * (running ? 1 : 0)
+          : walk * (running ? 0 : 1);
+    a.setEffectiveWeight(
+      THREE.MathUtils.lerp(a.getEffectiveWeight(), target, blend),
+    );
+    if (name !== "idle")
+      a.setEffectiveTimeScale(Math.max(0.25, speed / (running ? 8.5 : 5.3)));
+  }
+  u.mixer.update(dt);
+  u.crouch += (Number(p.crouch) - u.crouch) * blend;
+  const c = u.crouch;
+  if (!u.wasGrounded && p.grounded) u.land = 0.045;
+  u.wasGrounded = p.grounded;
+  u.land *= Math.exp(-12 * dt);
+  u.body.position.y -= c * 0.5 + u.land;
+  u.body.rotation.x = c * 0.17;
+  const lateral = (p.vx * Math.cos(p.yaw) - p.vz * Math.sin(p.yaw)) / 8;
+  u.body.rotation.z = -lateral * 0.055;
+  u.legs.forEach((leg, i) => {
+    leg.rotation.x -= c * 0.78;
+    leg.rotation.z +=
+      (i ? 1 : -1) * c * 0.06 + Math.sin(t * 10 + i * Math.PI) * lateral * 0.2;
+    u.knees[i].rotation.x += c * 1.46 + (p.grounded ? 0 : 0.6);
+  });
+  u.head.rotation.x = p.pitch * 0.38;
+  u.weaponPivot.rotation.x = p.pitch;
+  u.weaponPivot.position.y = 1.18 - c * 0.07;
+  u.arms[0].rotation.set(-1.0 - p.pitch * 0.48, -0.35, 0.16);
+  u.arms[1].rotation.set(-0.86 - p.pitch * 0.48, 0.12, -0.12);
+  u.elbows[0].rotation.set(-0.33, -0.38, 0);
+  u.elbows[1].rotation.set(-0.62, 0.05, 0);
+  if (p.reload > 0) {
+    const amount = Math.sin(
+      Math.PI * (1 - p.reload / WEAPONS[p.weapon].reload),
+    );
+    u.arms[0].rotation.x += amount * 0.6;
+    u.elbows[0].rotation.x += amount * 0.45;
+  }
+  if (p.action === "throw") {
+    u.arms[1].rotation.x = -2.4 + p.actionTime * 2;
+    u.weaponPivot.rotation.x -= 0.4;
+  }
+  if (p.action === "slash")
+    u.weaponPivot.rotation.y = Math.sin((p.actionTime / 0.32) * Math.PI) * -0.9;
+  else u.weaponPivot.rotation.y *= Math.exp(-18 * dt);
+  if (p.action === "draw") u.weaponPivot.rotation.z = p.actionTime * 1.6;
+  else u.weaponPivot.rotation.z = 0;
+  if (p.hp <= 0) {
+    u.death = Math.min(1, u.death + dt * 2.5);
+    u.body.rotation.z = u.death * 1.5;
+    u.body.position.y = -u.death * 0.05;
+    u.label.visible = false;
+    u.legs.forEach((l) => (l.rotation.x = 0.2));
+  } else {
+    u.label.visible = true;
+    u.label.position.y = 2.14 - c * 0.5;
+  }
+  if (u.gun) {
+    u.gun.userData.flash.visible =
+      t < u.flashAt && !!WEAPONS[u.weapon].damage && u.weapon !== "knife";
+    animateGun(
+      u.gun,
+      u.weapon,
+      p.reload,
+      t < u.flashAt ? 1 : 0,
+      dt,
+      p.action,
+      p.actionTime,
+    );
+  }
+}

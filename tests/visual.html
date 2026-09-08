@@ -1,19 +1,264 @@
-<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="/favicon.svg"><style>body{margin:0;background:#24342e}canvas{display:block}</style></head><body><canvas id="scene"></canvas><script type="module">
-import * as THREE from 'three';
-import {Renderer} from '/src/renderer.js';
-import {materialsReady} from '/src/materials.js';
-import {makePlayer,makeGun,animatePlayer,disposeModel} from '/src/models.js';
-const r=new Renderer(document.querySelector('canvas'));await materialsReady;
-window.previewMap=id=>{r.setMap(id);return r.preview();};
-window.sample=({map='port',weapon='sentinel',quality='high',mode='fps',reload=0}={})=>{
-  r.setMap(map);r.setQuality(quality);r.clearPlayers();const p={id:'sample',name:'Blue / Operator',team:'blue',x:-9,y:0,z:-3,vx:0,vz:0,pitch:0,yaw:Math.PI,hp:100,weapon:'vektor',spawnId:1,reload:0,grounded:true};
-  r.sync({players:[p],grenades:[]},'local');
-  const local={x:-9,y:0,z:1,vx:0,vz:0,pitch:0,yaw:0,hp:100,weapon,grounded:true,reload};
-  for(let i=0;i<10;i++)r.render(.016,local,true,false);
-  if(mode==='operator'){r.camera.position.set(-7.6,1.2,-.55);r.camera.lookAt(-9,1,-3);r.renderer.render(r.scene,r.camera);}
-  return {draws:r.renderer.info.render.calls,triangles:r.renderer.info.render.triangles,geometries:r.renderer.info.memory.geometries,textures:r.renderer.info.memory.textures};
-};
-window.animationCheck=()=>{const p=makePlayer('Animation test','red');p.userData.gun=makeGun('sentinel');p.userData.weapon='sentinel';p.userData.weaponPivot.add(p.userData.gun);const state={vx:3,vz:0,grounded:true,crouch:true,pitch:0,hp:100,reload:1};animatePlayer(p,state,.5,.1);const crouch=p.userData.knees[0].rotation.x,mag=p.userData.gun.userData.magazine.position.y;animatePlayer(p,{...state,hp:0},1,1);const death=p.userData.death;disposeModel(p);p.userData.labelTexture.dispose();p.userData.label.material.dispose();return {crouch,mag,death};};
-window.benchmark=async()=>{r.setMap('port');r.setQuality('high');r.clearPlayers();r.sync({players:Array.from({length:9},(_,i)=>({id:'actor'+i,name:'Operator '+i,team:i%2?'red':'blue',x:-10+i%3*2,y:0,z:-3-Math.floor(i/3)*2,vx:1,vz:0,pitch:0,yaw:Math.PI,hp:100,weapon:i%2?'vektor':'sentinel',spawnId:1,reload:0,grounded:true})),grenades:[]},'local');const local={x:-9,y:0,z:2,vx:0,vz:0,pitch:0,yaw:0,hp:100,weapon:'sentinel',reload:0};for(let i=0;i<5;i++)r.render(.016,local,true,false);const start=performance.now();for(let i=0;i<90;i++){await new Promise(requestAnimationFrame);r.render(.016,local,true,false);}return {fps:Math.round(90000/(performance.now()-start)),draws:r.renderer.info.render.calls,triangles:r.renderer.info.render.triangles};};
-window.ready=true;
-</script></body></html>
+<!doctype html>
+<html>
+  <head>
+    <link rel="icon" href="/favicon.svg" />
+    <style>
+      body {
+        margin: 0;
+        background: #183d44;
+      }
+      canvas {
+        display: block;
+      }
+      #label {
+        position: fixed;
+        left: 30px;
+        top: 24px;
+        color: #e9ecd9;
+        font: 600 16px Arial;
+        letter-spacing: 2px;
+        pointer-events: none;
+        text-shadow: 0 1px 4px #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="label">COASTLINE / V2</div>
+    <canvas id="game"></canvas>
+    <script type="module">
+      import * as THREE from "three";
+      import { Renderer } from "../src/renderer.js";
+      import { loadAssets } from "../src/assets.js";
+      import {
+        makePlayer,
+        makeGun,
+        animatePlayer,
+        animateGun,
+      } from "../src/models.js";
+      import { materialsReady } from "../src/materials.js";
+      await Promise.all([loadAssets(), materialsReady]);
+      const r = new Renderer(document.querySelector("canvas"));
+      r.setQuality("high");
+      window.graphics = r;
+      const studio = new THREE.Group();
+      studio.add(new THREE.HemisphereLight(0xe0f0f6, 0x425744, 0.65));
+      const key = new THREE.DirectionalLight(0xffe1b7, 2.7);
+      key.position.set(-3, 5, -4);
+      key.castShadow = true;
+      key.shadow.mapSize.set(2048, 2048);
+      Object.assign(key.shadow.camera, {
+        left: -3,
+        right: 3,
+        top: 3,
+        bottom: -3,
+        near: 0.1,
+        far: 15,
+      });
+      studio.add(key);
+      const rim = new THREE.DirectionalLight(0x9bcee8, 1.8);
+      rim.position.set(3, 3, 2);
+      studio.add(rim);
+      const floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(30, 30),
+        new THREE.MeshStandardMaterial({ color: 0x235b60, roughness: 0.7 }),
+      );
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -0.012;
+      floor.receiveShadow = true;
+      studio.add(floor);
+      r.scene.add(studio);
+      let subject;
+      window.sample = async ({
+        mode = "map",
+        weapon = "ak47",
+        team = "soldiers",
+        quality = "high",
+        reload = 0,
+        site = "mid",
+      } = {}) => {
+        if (subject) {
+          subject.removeFromParent();
+          subject = null;
+        }
+        r.setQuality(quality);
+        r.world.root.visible = mode === "map";
+        studio.visible = mode !== "map";
+        floor.visible = mode === "character";
+        r.scene.fog =
+          mode === "map" ? new THREE.FogExp2(0xb7d8d8, 0.0036) : null;
+        r.scene.background = new THREE.Color(0x235b60);
+        r.camera.fov = 40;
+        r.camera.updateProjectionMatrix();
+        if (mode === "map") {
+          if (site === "aerial") {
+            r.menuCamera();
+          } else {
+            const views = {
+              mid: [-7, 1.68, 12, 0, 2, -7],
+              a: [-36, 1.68, -22, -21, 2, -11],
+              b: [35, 1.68, -22, 20, 2, -11],
+              market: [-34, 1.68, 27, -13, 2, 16],
+              water: [0, 0.32, 9, 0, 1, -6],
+              roof: [-28, 6.2, -7, 0, 3, -20],
+            };
+            const v = views[site];
+            r.camera.position.set(...v.slice(0, 3));
+            r.camera.lookAt(...v.slice(3));
+          }
+        } else {
+          subject =
+            mode === "character"
+              ? makePlayer("CROSSLINE", team)
+              : makeGun(weapon);
+          r.scene.add(subject);
+          if (mode === "character") {
+            subject.userData.label.visible = false;
+            subject.rotation.y = 0.16;
+            r.camera.position.set(-1.5, 1.28, -3.8);
+            r.camera.lookAt(0, 1.03, 0);
+          } else {
+            r.camera.position.set(-1.8, 0.63, -1.5);
+            r.camera.lookAt(0, 0, -0.08);
+            animateGun(subject, weapon, reload, 0.1);
+          }
+        }
+        r.renderer.render(r.scene, r.camera);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        r.renderer.info.reset();
+        r.renderer.render(r.scene, r.camera);
+        document.querySelector("#label").textContent =
+          mode === "map"
+            ? `COASTLINE / ${site.toUpperCase()}`
+            : mode === "character"
+              ? team.toUpperCase()
+              : weapon.toUpperCase();
+        return {
+          calls: r.renderer.info.render.calls,
+          triangles: r.renderer.info.render.triangles,
+        };
+      };
+      window.preview = async (mode) => {
+        await window.sample(
+          mode === "coastline"
+            ? { mode: "map", site: "aerial" }
+            : {
+                mode: "character",
+                team: mode === "soldier" ? "soldiers" : "terrorists",
+              },
+        );
+        const c = document.createElement("canvas");
+        c.width = mode === "coastline" ? 1440 : 512;
+        c.height = mode === "coastline" ? 900 : 512;
+        const ctx = c.getContext("2d"),
+          source = r.renderer.domElement;
+        if (mode === "coastline")
+          ctx.drawImage(source, 0, 0, c.width, c.height);
+        else {
+          const side = source.height;
+          ctx.drawImage(
+            source,
+            (source.width - side) / 2,
+            0,
+            side,
+            side,
+            0,
+            0,
+            512,
+            512,
+          );
+        }
+        return c.toDataURL("image/webp", 0.9);
+      };
+      window.animationCheck = () => {
+        const m = makePlayer("Check", "soldiers"),
+          state = {
+            vx: 5,
+            vz: 0,
+            pitch: 0,
+            crouch: true,
+            hp: 100,
+            grounded: true,
+            weapon: "ak47",
+            action: "idle",
+            reload: 0,
+            actionTime: 0,
+          };
+        for (let i = 0; i < 60; i++) animatePlayer(m, state, i / 60, 1 / 60);
+        const crouch = m.userData.body.position.y;
+        for (let i = 0; i < 60; i++)
+          animatePlayer(m, { ...state, hp: 0 }, i / 60, 1 / 60);
+        const gun = makeGun("ak47");
+        animateGun(gun, "ak47", 1.6, 0);
+        return {
+          crouch,
+          death: m.userData.death,
+          mag: gun.userData.magazines[0].position.y,
+        };
+      };
+      window.benchmark = async (quality) => {
+        await window.sample({ site: "a" });
+        r.setQuality(quality);
+        const base = {
+            y: 0,
+            vx: 0,
+            vy: 0,
+            vz: 0,
+            yaw: Math.PI,
+            pitch: 0,
+            crouch: false,
+            grounded: true,
+            hp: 100,
+            weapon: "m4a4",
+            reload: 0,
+            action: "idle",
+            actionTime: 0,
+            spawnId: 1,
+          },
+          state = {
+            players: Array.from({ length: 9 }, (_, i) => ({
+              ...base,
+              id: "bench" + i,
+              name: "Player " + i,
+              team: i % 2 ? "soldiers" : "terrorists",
+              x: -30 + (i % 3) * 3,
+              z: -20 - Math.floor(i / 3) * 3,
+            })),
+            grenades: [],
+            drops: [],
+            smokes: [],
+          };
+        r.sync(state, "self");
+        const local = { ...base, x: -34, z: -15, yaw: 0.15 };
+        const times = [],
+          calls = [];
+        let previous = performance.now();
+        for (let i = 0; i < 100; i++) {
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const t = performance.now(),
+            dt = (t - previous) / 1000;
+          previous = t;
+          r.render(Math.min(0.05, dt), local, true, false);
+          if (i > 20) {
+            times.push(dt * 1000);
+            calls.push(r.renderer.info.render.calls);
+          }
+        }
+        times.sort((a, b) => a - b);
+        const gl = r.renderer.getContext(),
+          debug = gl.getExtension("WEBGL_debug_renderer_info");
+        return {
+          quality,
+          medianFrameMs: times[Math.floor(times.length * 0.5)],
+          p95FrameMs: times[Math.floor(times.length * 0.95)],
+          meanDrawCalls: Math.round(
+            calls.reduce((a, b) => a + b, 0) / calls.length,
+          ),
+          renderer: debug
+            ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)
+            : "Unavailable",
+        };
+      };
+      window.ready = true;
+    </script>
+  </body>
+</html>
