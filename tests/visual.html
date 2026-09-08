@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="/favicon.svg"><style>body{margin:0;background:#24342e}canvas{display:block}</style></head><body><canvas id="scene"></canvas><script type="module">
+import * as THREE from 'three';
+import {Renderer} from '/src/renderer.js';
+import {materialsReady} from '/src/materials.js';
+import {makePlayer,makeGun,animatePlayer,disposeModel} from '/src/models.js';
+const r=new Renderer(document.querySelector('canvas'));await materialsReady;
+window.previewMap=id=>{r.setMap(id);return r.preview();};
+window.sample=({map='port',weapon='sentinel',quality='high',mode='fps',reload=0}={})=>{
+  r.setMap(map);r.setQuality(quality);r.clearPlayers();const p={id:'sample',name:'Blue / Operator',team:'blue',x:-9,y:0,z:-3,vx:0,vz:0,pitch:0,yaw:Math.PI,hp:100,weapon:'vektor',spawnId:1,reload:0,grounded:true};
+  r.sync({players:[p],grenades:[]},'local');
+  const local={x:-9,y:0,z:1,vx:0,vz:0,pitch:0,yaw:0,hp:100,weapon,grounded:true,reload};
+  for(let i=0;i<10;i++)r.render(.016,local,true,false);
+  if(mode==='operator'){r.camera.position.set(-7.6,1.2,-.55);r.camera.lookAt(-9,1,-3);r.renderer.render(r.scene,r.camera);}
+  return {draws:r.renderer.info.render.calls,triangles:r.renderer.info.render.triangles,geometries:r.renderer.info.memory.geometries,textures:r.renderer.info.memory.textures};
+};
+window.animationCheck=()=>{const p=makePlayer('Animation test','red');p.userData.gun=makeGun('sentinel');p.userData.weapon='sentinel';p.userData.weaponPivot.add(p.userData.gun);const state={vx:3,vz:0,grounded:true,crouch:true,pitch:0,hp:100,reload:1};animatePlayer(p,state,.5,.1);const crouch=p.userData.knees[0].rotation.x,mag=p.userData.gun.userData.magazine.position.y;animatePlayer(p,{...state,hp:0},1,1);const death=p.userData.death;disposeModel(p);p.userData.labelTexture.dispose();p.userData.label.material.dispose();return {crouch,mag,death};};
+window.benchmark=async()=>{r.setMap('port');r.setQuality('high');r.clearPlayers();r.sync({players:Array.from({length:9},(_,i)=>({id:'actor'+i,name:'Operator '+i,team:i%2?'red':'blue',x:-10+i%3*2,y:0,z:-3-Math.floor(i/3)*2,vx:1,vz:0,pitch:0,yaw:Math.PI,hp:100,weapon:i%2?'vektor':'sentinel',spawnId:1,reload:0,grounded:true})),grenades:[]},'local');const local={x:-9,y:0,z:2,vx:0,vz:0,pitch:0,yaw:0,hp:100,weapon:'sentinel',reload:0};for(let i=0;i<5;i++)r.render(.016,local,true,false);const start=performance.now();for(let i=0;i<90;i++){await new Promise(requestAnimationFrame);r.render(.016,local,true,false);}return {fps:Math.round(90000/(performance.now()-start)),draws:r.renderer.info.render.calls,triangles:r.renderer.info.render.triangles};};
+window.ready=true;
+</script></body></html>
