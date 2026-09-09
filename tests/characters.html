@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Crossline · compiled character verification</title>
+    <link rel="icon" href="/favicon.svg" />
+    <style>
+      body {
+        margin: 0;
+        background: #19474e;
+        color: #edf0df;
+        font:
+          14px Arial,
+          sans-serif;
+      }
+      canvas {
+        display: block;
+      }
+      #label {
+        position: fixed;
+        left: 28px;
+        top: 24px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        pointer-events: none;
+      }
+      #note {
+        position: fixed;
+        bottom: 22px;
+        left: 28px;
+        color: #bdd0cd;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="label">Loading compiled character assets…</div>
+    <div id="note">
+      Actual game GLBs · runtime animations · no server state or live rooms
+    </div>
+    <canvas></canvas>
+    <script type="module">
+      import * as THREE from "three";
+      import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+      import { loadAssets } from "../src/assets.js";
+      import {
+        makePlayer,
+        makeGun,
+        animatePlayer,
+        disposeModel,
+      } from "../src/models.js";
+      import { weaponPose, reloadPose } from "../src/weapon-motion.js";
+      import { WEAPONS } from "../shared/weapons.js";
+
+      const POSES = [
+        "idle",
+        "walk",
+        "run",
+        "crouch",
+        "jump",
+        "shoot",
+        "reload",
+        "throw",
+        "draw",
+        "death",
+        "backward",
+        "strafeLeft",
+        "strafeRight",
+        "crouchWalk",
+        "land",
+        "drop",
+        "pickup",
+        "respawn",
+        "slash",
+      ];
+      const JOINTS = [
+        "body",
+        "head",
+        "arm0",
+        "arm1",
+        "elbow0",
+        "elbow1",
+        "wrist0",
+        "wrist1",
+        "leg0",
+        "leg1",
+        "knee0",
+        "knee1",
+        "ankle0",
+        "ankle1",
+        "weaponPivot",
+      ];
+      const renderer = new THREE.WebGLRenderer({
+        canvas: document.querySelector("canvas"),
+        antialias: true,
+        powerPreference: "high-performance",
+      });
+      renderer.setPixelRatio(1);
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.shadowMap.autoUpdate = false;
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x19474e);
+      scene.add(new THREE.HemisphereLight(0xdeedf4, 0x263e3d, 0.8));
+      const key = new THREE.DirectionalLight(0xffe2bd, 3.2);
+      key.position.set(-3, 5, -4);
+      key.castShadow = true;
+      key.shadow.mapSize.set(2048, 2048);
+      Object.assign(key.shadow.camera, {
+        left: -6,
+        right: 6,
+        top: 6,
+        bottom: -6,
+        near: 0.1,
+        far: 25,
+      });
+      key.shadow.normalBias = 0.018;
+      scene.add(key);
+      const rim = new THREE.DirectionalLight(0x9bcee8, 2.2);
+      rim.position.set(3, 3, 2);
+      scene.add(rim);
+      const floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(50, 50),
+        new THREE.MeshStandardMaterial({ color: 0x235b60, roughness: 0.78 }),
+      );
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -0.012;
+      floor.receiveShadow = true;
+      scene.add(floor);
+      const camera = new THREE.PerspectiveCamera(
+        37,
+        innerWidth / innerHeight,
+        0.05,
+        80,
+      );
+      const environment = new RoomEnvironment(),
+        pmrem = new THREE.PMREMGenerator(renderer);
+      const environmentTarget = pmrem.fromScene(environment, 0.04);
+      scene.environment = environmentTarget.texture;
+      scene.environmentIntensity = 0.32;
+      environment.dispose();
+      pmrem.dispose();
+      const v = new THREE.Vector3(),
+        point = new THREE.Vector3();
+      let displayed = [];
+
+      function skinMeshes(root) {
+        const list = [];
+        root.traverse((o) => {
+          if (o.isSkinnedMesh) list.push(o);
+        });
+        return list;
+      }
+      function updateSkeleton(root) {
+        root.updateMatrixWorld(true);
+        for (const mesh of skinMeshes(root)) mesh.skeleton.update();
+      }
+      function stateFor(pose, weapon) {
+        return {
+          vx: pose === "strafeLeft" ? -4.5 : pose === "strafeRight" ? 4.5 : 0,
+          vz:
+            pose === "walk"
+              ? -4.5
+              : pose === "run"
+                ? -8.5
+                : pose === "backward"
+                  ? 4.5
+                  : pose === "crouchWalk"
+                    ? -2
+                    : 0,
+          yaw: 0,
+          pitch: 0,
+          hp: pose === "death" ? 0 : 100,
+          grounded: pose !== "jump",
+          crouch: pose === "crouch" || pose === "crouchWalk",
+          weapon,
+          reload: pose === "reload" ? WEAPONS[weapon].reload * 0.52 : 0,
+          action: [
+            "throw",
+            "draw",
+            "drop",
+            "pickup",
+            "respawn",
+            "slash",
+          ].includes(pose)
+            ? pose
+            : "idle",
+          actionTime:
+            pose === "throw"
+              ? 0.3
+              : ["draw", "drop", "pickup", "respawn", "slash"].includes(pose)
+                ? 0.16
+                : 0,
+        };
+      }
+      function create(team, lowDetail, pose = "idle") {
+        const root = makePlayer("CHARACTER QA", team, lowDetail);
+        const weapon =
+          pose === "throw"
+            ? "he"
+            : pose === "slash"
+              ? "knife"
+              : team === "soldiers"
+                ? "m4a4"
+                : "ak47";
+        root.userData.gun = makeGun(weapon);
+        root.userData.weapon = weapon;
+        root.userData.weaponPivot.add(root.userData.gun);
+        root.userData.label.visible = false;
+        return { root, state: stateFor(pose, weapon), pose, team, lowDetail };
+      }
+      function step(subject, frame) {
+        if (subject.pose === "land") subject.state.grounded = frame >= 108;
+        if (subject.pose === "shoot")
+          subject.root.userData.flashAt = frame / 60 + 0.055;
+        animatePlayer(subject.root, subject.state, frame / 60, 1 / 60);
+        subject.root.userData.label.visible = false;
+      }
+      function dispose(root) {
+        root.removeFromParent();
+        root.userData.mixer?.stopAllAction();
+        root.userData.mixer?.uncacheRoot(root);
+        root.userData.labelTexture?.dispose();
+        root.userData.label?.material.dispose();
+        // Exercise the actual runtime disposer, not a test-only bone-texture
+        // cleanup that could conceal a leak in live player removal.
+        disposeModel(root);
+      }
+      function clear() {
+        for (const root of displayed) dispose(root);
+        displayed = [];
+      }
+      function skinBounds(root) {
+        const bounds = new THREE.Box3();
+        for (const mesh of skinMeshes(root)) {
+          for (let i = 0; i < mesh.geometry.attributes.position.count; i++) {
+            mesh.getVertexPosition(i, point).applyMatrix4(mesh.matrixWorld);
+            bounds.expandByPoint(point);
+          }
+        }
+        return {
+          min: bounds.min.toArray(),
+          max: bounds.max.toArray(),
+          size: bounds.getSize(v).toArray(),
+        };
+      }
+      function bindSkinPositions(root) {
+        updateSkeleton(root);
+        const positions = new Map();
+        for (const mesh of skinMeshes(root)) {
+          const count = mesh.geometry.attributes.position.count;
+          const bind = new Float64Array(count * 3);
+          for (let i = 0; i < count; i++) {
+            mesh.getVertexPosition(i, point).applyMatrix4(mesh.matrixWorld);
+            point.toArray(bind, i * 3);
+          }
+          positions.set(mesh, bind);
+        }
+        return positions;
+      }
+      function skinStrain(root, bindPositions) {
+        let flaggedEdges = 0,
+          maximumRatio = 0;
+        const examples = [];
+        for (const mesh of skinMeshes(root)) {
+          const position = mesh.geometry.attributes.position;
+          const posed = new Float64Array(position.count * 3);
+          // Quantized GLB POSITIONs are not necessarily in world bind space.
+          // Compare against the untouched skeleton's actual rest vertices.
+          const bind = bindPositions.get(mesh);
+          for (let i = 0; i < position.count; i++) {
+            mesh.getVertexPosition(i, point).applyMatrix4(mesh.matrixWorld);
+            point.toArray(posed, i * 3);
+          }
+          const indices = mesh.geometry.index;
+          const weightsAt = (index) => {
+            const weights = mesh.geometry.attributes.skinWeight,
+              joints = mesh.geometry.attributes.skinIndex;
+            return [0, 1, 2, 3]
+              .map((channel) => ({
+                bone: mesh.skeleton.bones[joints.getComponent(index, channel)]
+                  ?.name,
+                weight: weights.getComponent(index, channel),
+              }))
+              .filter((entry) => entry.weight > 0.001);
+          };
+          const count = indices?.count || position.count;
+          for (let triangle = 0; triangle < count; triangle += 3) {
+            for (let edge = 0; edge < 3; edge++) {
+              const a = indices
+                ? indices.getX(triangle + edge)
+                : triangle + edge;
+              const b = indices
+                ? indices.getX(triangle + ((edge + 1) % 3))
+                : triangle + ((edge + 1) % 3);
+              const length = (data) =>
+                Math.hypot(
+                  data[a * 3] - data[b * 3],
+                  data[a * 3 + 1] - data[b * 3 + 1],
+                  data[a * 3 + 2] - data[b * 3 + 2],
+                );
+              const bindLength = length(bind),
+                posedLength = length(posed);
+              // A ratio alone punishes harmless nearly coincident seam points.
+              // Require a visible five-centimetre edge and absolute extension.
+              const ratio = posedLength / Math.max(bindLength, 1e-6);
+              if (
+                ratio > 10 &&
+                posedLength > 0.05 &&
+                posedLength - bindLength > 0.045
+              ) {
+                flaggedEdges++;
+                maximumRatio = Math.max(maximumRatio, ratio);
+                if (examples.length < 8 || ratio > examples.at(-1).ratio) {
+                  examples.push({
+                    mesh: mesh.name,
+                    a,
+                    b,
+                    ratio,
+                    bindLength,
+                    posedLength,
+                    bindA: Array.from(bind.slice(a * 3, a * 3 + 3)),
+                    bindB: Array.from(bind.slice(b * 3, b * 3 + 3)),
+                    weightsA: weightsAt(a),
+                    weightsB: weightsAt(b),
+                  });
+                  examples.sort((a, b) => b.ratio - a.ratio);
+                  examples.length = Math.min(examples.length, 8);
+                }
+              }
+            }
+          }
+        }
+        return { flaggedEdges, maximumRatio, examples };
+      }
+      // Select actual sole vertices from the ankle-weighted skin, not a stale
+      // bind-pose mesh bounding box. This remains valid for simplified LODs.
+      function footSamples(root) {
+        const feet = [[], []];
+        for (const mesh of skinMeshes(root)) {
+          const weights = mesh.geometry.attributes.skinWeight,
+            indices = mesh.geometry.attributes.skinIndex;
+          for (let i = 0; i < weights.count; i++) {
+            for (let side = 0; side < 2; side++) {
+              let weight = 0;
+              for (let channel = 0; channel < 4; channel++) {
+                const index = indices.getComponent(i, channel),
+                  bone = mesh.skeleton.bones[index];
+                let cursor = bone;
+                while (cursor?.isBone) {
+                  if (cursor.name === `ankle${side}`) {
+                    weight += weights.getComponent(i, channel);
+                    break;
+                  }
+                  cursor = cursor.parent;
+                }
+              }
+              if (weight >= 0.45) feet[side].push({ mesh, index: i });
+            }
+          }
+        }
+        return feet;
+      }
+      function footY(feet) {
+        return feet.map((samples) => {
+          let min = Infinity;
+          for (const { mesh, index } of samples) {
+            mesh.getVertexPosition(index, point).applyMatrix4(mesh.matrixWorld);
+            min = Math.min(min, point.y);
+          }
+          return min;
+        });
+      }
+      function gripGaps(root, state) {
+        const u = root.userData,
+          pose = weaponPose(u.weapon);
+        return [0, 1].map((side) => {
+          const wrist = root.getObjectByName(`wrist${side}`);
+          if (!wrist) return null;
+          wrist.getWorldPosition(v);
+          point.set(...(side ? pose.grip : pose.support));
+          if (!side && state.reload)
+            point.add(
+              new THREE.Vector3(...reloadPose(u.weapon, state.reload).support),
+            );
+          u.weaponPivot.localToWorld(point);
+          return v.distanceTo(point);
+        });
+      }
+      function supportAlignment(root) {
+        const wrist = root.getObjectByName("wrist0");
+        const handRotation = wrist.getWorldQuaternion(new THREE.Quaternion());
+        const weaponRotation = root.userData.weaponPivot.getWorldQuaternion(
+          new THREE.Quaternion(),
+        );
+        return new THREE.Vector3(0, -1, 0)
+          .applyQuaternion(handRotation)
+          .dot(new THREE.Vector3(0, 0, -1).applyQuaternion(weaponRotation));
+      }
+      function jointPose(root) {
+        return JOINTS.flatMap((name) => {
+          const node = root.getObjectByName(name);
+          return node
+            ? [...node.position.toArray(), ...node.quaternion.toArray()]
+            : [];
+        });
+      }
+      function legPose(root) {
+        return ["leg0", "leg1", "knee0", "knee1", "ankle0", "ankle1"].flatMap(
+          (name) => root.getObjectByName(name).quaternion.toArray(),
+        );
+      }
+      function transformAudit(root) {
+        let finite = true,
+          maxQuaternionError = 0;
+        root.traverse((node) => {
+          finite &&= [
+            ...node.position.toArray(),
+            ...node.quaternion.toArray(),
+            ...node.scale.toArray(),
+            ...node.matrixWorld.elements,
+          ].every(Number.isFinite);
+          maxQuaternionError = Math.max(
+            maxQuaternionError,
+            Math.abs(node.quaternion.length() - 1),
+          );
+        });
+        return { finite, maxQuaternionError };
+      }
+      function structure(root) {
+        const meshes = skinMeshes(root),
+          bones = new Set(),
+          owned = new Set();
+        root.traverse((node) => owned.add(node));
+        let vertices = 0,
+          triangles = 0,
+          maxWeightError = 0,
+          invalidWeights = 0,
+          invalidBoneIndices = 0,
+          invalidVertices = 0,
+          bonesOutsideRoot = 0,
+          missingUV = 0,
+          texturedMeshes = 0;
+        for (const mesh of meshes) {
+          const { position, skinWeight, skinIndex, uv, normal } =
+            mesh.geometry.attributes;
+          vertices += position.count;
+          triangles += (mesh.geometry.index?.count || position.count) / 3;
+          if (!uv) missingUV++;
+          if (
+            (Array.isArray(mesh.material)
+              ? mesh.material
+              : [mesh.material]
+            ).some((material) => material.map)
+          )
+            texturedMeshes++;
+          for (const bone of mesh.skeleton.bones) {
+            bones.add(bone);
+            if (!owned.has(bone)) bonesOutsideRoot++;
+          }
+          if (!skinWeight || !skinIndex) {
+            invalidWeights++;
+            continue;
+          }
+          for (let i = 0; i < position.count; i++) {
+            const values = [
+              position.getX(i),
+              position.getY(i),
+              position.getZ(i),
+              normal?.getX(i),
+              normal?.getY(i),
+              normal?.getZ(i),
+            ];
+            if (uv) values.push(uv.getX(i), uv.getY(i));
+            if (!values.every(Number.isFinite)) invalidVertices++;
+            let total = 0;
+            for (let j = 0; j < 4; j++) {
+              const weight = skinWeight.getComponent(i, j),
+                index = skinIndex.getComponent(i, j);
+              total += weight;
+              if (!Number.isFinite(weight) || weight < 0 || weight > 1.001)
+                invalidWeights++;
+              if (
+                !Number.isInteger(index) ||
+                index < 0 ||
+                index >= mesh.skeleton.bones.length
+              )
+                invalidBoneIndices++;
+            }
+            maxWeightError = Math.max(maxWeightError, Math.abs(total - 1));
+          }
+        }
+        return {
+          skinnedMeshes: meshes.length,
+          bones: bones.size,
+          vertices,
+          triangles,
+          maxWeightError,
+          invalidWeights,
+          invalidBoneIndices,
+          invalidVertices,
+          bonesOutsideRoot,
+          missingUV,
+          texturedMeshes,
+          missingJoints: JOINTS.filter((name) => !root.getObjectByName(name)),
+          clips: root.animations.map((clip) => clip.name),
+        };
+      }
+      function cloneCheck(team, lowDetail) {
+        const a = create(team, lowDetail),
+          b = create(team, lowDetail);
+        const meshesA = skinMeshes(a.root),
+          meshesB = skinMeshes(b.root);
+        const skeletonsB = new Set(meshesB.map((m) => m.skeleton)),
+          bonesB = new Set(meshesB.flatMap((m) => m.skeleton.bones));
+        const independentSkeletons = meshesA.every(
+          (m) => !skeletonsB.has(m.skeleton),
+        );
+        const independentBones = meshesA.every((m) =>
+          m.skeleton.bones.every((bone) => !bonesB.has(bone)),
+        );
+        updateSkeleton(b.root);
+        const before = jointPose(b.root),
+          geometryB = new Set(meshesB.map((m) => m.geometry));
+        a.state.crouch = true;
+        for (let frame = 0; frame < 120; frame++) step(a, frame);
+        updateSkeleton(a.root);
+        updateSkeleton(b.root);
+        const after = jointPose(b.root);
+        const result = {
+          independentSkeletons,
+          independentBones,
+          sharedGeometry: meshesA.every((m) => geometryB.has(m.geometry)),
+          untouchedCloneDrift: Math.max(
+            0,
+            ...after.map((value, index) => Math.abs(value - before[index])),
+          ),
+          changedFirstClone: Math.max(
+            0,
+            ...jointPose(a.root).map((value, index) =>
+              Math.abs(value - before[index]),
+            ),
+          ),
+        };
+        dispose(a.root);
+        dispose(b.root);
+        return result;
+      }
+      window.auditCharacter = ({ team, lowDetail }) => {
+        const original = create(team, lowDetail),
+          metadata = structure(original.root);
+        dispose(original.root);
+        if (!metadata.skinnedMeshes || metadata.missingJoints.length)
+          return {
+            team,
+            lowDetail,
+            metadata,
+            notReady:
+              "Expected new skinned character GLBs with the preserved runtime rig and wrist sockets; old rigid-only assets are not accepted.",
+          };
+        const independence = cloneCheck(team, lowDetail),
+          poses = [];
+        for (const pose of POSES) {
+          const subject = create(team, lowDetail, pose),
+            feet = footSamples(subject.root),
+            bindPositions = ["idle", "crouch"].includes(pose)
+              ? bindSkinPositions(subject.root)
+              : null;
+          let finite = true,
+            maxQuaternionError = 0,
+            minBoundsY = Infinity,
+            maxExtent = 0,
+            minFootY = Infinity,
+            maxFootY = -Infinity,
+            maxGripGap = 0,
+            minSupportAlignment = 1,
+            settledPose,
+            settledLegPose,
+            maxSettledLegDrift = 0;
+          for (let frame = 0; frame < 120; frame++) {
+            step(subject, frame);
+            if (frame % 15 !== 14) continue;
+            updateSkeleton(subject.root);
+            const audit = transformAudit(subject.root),
+              bounds = skinBounds(subject.root);
+            finite &&=
+              audit.finite &&
+              [...bounds.min, ...bounds.max, ...bounds.size].every(
+                Number.isFinite,
+              );
+            maxQuaternionError = Math.max(
+              maxQuaternionError,
+              audit.maxQuaternionError,
+            );
+            minBoundsY = Math.min(minBoundsY, bounds.min[1]);
+            maxExtent = Math.max(maxExtent, ...bounds.size);
+            if (frame >= 59) {
+              const y = footY(feet);
+              minFootY = Math.min(minFootY, ...y);
+              maxFootY = Math.max(maxFootY, ...y);
+              maxGripGap = Math.max(
+                maxGripGap,
+                ...gripGaps(subject.root, subject.state).map(
+                  (gap) => gap ?? Infinity,
+                ),
+              );
+              minSupportAlignment = Math.min(
+                minSupportAlignment,
+                supportAlignment(subject.root),
+              );
+              if (frame === 59) settledPose = jointPose(subject.root);
+              settledLegPose ||= legPose(subject.root);
+              maxSettledLegDrift = Math.max(
+                maxSettledLegDrift,
+                ...legPose(subject.root).map((value, i) =>
+                  Math.abs(value - settledLegPose[i]),
+                ),
+              );
+            }
+          }
+          const endPose = jointPose(subject.root);
+          poses.push({
+            pose,
+            finite,
+            maxQuaternionError,
+            minBoundsY,
+            maxExtent,
+            minFootY,
+            maxFootY,
+            maxGripGap,
+            minSupportAlignment,
+            maxSettledLegDrift,
+            footVertices: feet.map((samples) => samples.length),
+            bounds: skinBounds(subject.root),
+            strain: ["idle", "crouch"].includes(pose)
+              ? skinStrain(subject.root, bindPositions)
+              : null,
+            settledDrift: Math.max(
+              0,
+              ...endPose.map((value, i) => Math.abs(value - settledPose[i])),
+            ),
+            jointPose: endPose,
+          });
+          dispose(subject.root);
+        }
+        return { team, lowDetail, metadata, independence, poses };
+      };
+      window.characterScreenshot = ({
+        team,
+        lowDetail,
+        pose,
+        back = false,
+      }) => {
+        clear();
+        const subject = create(team, lowDetail, pose);
+        for (let frame = 0; frame < 120; frame++) step(subject, frame);
+        scene.add(subject.root);
+        displayed.push(subject.root);
+        updateSkeleton(subject.root);
+        camera.position.set(back ? 2.1 : -1.85, 1.22, back ? 3.6 : -3.6);
+        camera.lookAt(0, 0.96, 0);
+        if (pose === "death") {
+          // A fallen body is wider than a standing portrait. Fit the actual
+          // deformed skin instead of clipping the corpse with the idle camera.
+          const bounds = skinBounds(subject.root);
+          const center = new THREE.Vector3(...bounds.min)
+            .add(new THREE.Vector3(...bounds.max))
+            .multiplyScalar(0.5);
+          const radius = new THREE.Vector3(...bounds.size).length() * 0.5;
+          const distance =
+            (radius / Math.sin(THREE.MathUtils.degToRad(camera.fov * 0.5))) *
+            1.12;
+          camera.position
+            .copy(center)
+            .add(
+              new THREE.Vector3(-0.28, 0.37, -1)
+                .normalize()
+                .multiplyScalar(distance),
+            );
+          camera.lookAt(center);
+        }
+        document.querySelector("#label").textContent =
+          `${team} / ${lowDetail ? "LOD" : "FULL"} / ${pose}${back ? " / BACK" : ""}`;
+        renderer.shadowMap.needsUpdate = true;
+        renderer.render(scene, camera);
+        return {
+          calls: renderer.info.render.calls,
+          triangles: renderer.info.render.triangles,
+        };
+      };
+      window.characterBenchmark = async ({ lowDetail = false } = {}) => {
+        clear();
+        const drawn = new Set();
+        const players = Array.from({ length: 9 }, (_, i) => {
+          const subject = create(
+            i % 2 ? "soldiers" : "terrorists",
+            lowDetail,
+            i % 3 === 0 ? "run" : i % 3 === 1 ? "walk" : "idle",
+          );
+          subject.root.position.set(
+            ((i % 3) - 1) * 2.1,
+            0,
+            Math.floor(i / 3) * 2,
+          );
+          scene.add(subject.root);
+          displayed.push(subject.root);
+          for (const mesh of skinMeshes(subject.root))
+            mesh.onBeforeRender = () => drawn.add(i);
+          return subject;
+        });
+        camera.position.set(0, 2.35, -9.8);
+        camera.lookAt(0, 1.03, 1.4);
+        document.querySelector("#label").textContent =
+          `NINE CHARACTERS / ${lowDetail ? "LOD" : "FULL"} / 60 FPS TARGET`;
+        const intervals = [],
+          cpu = [],
+          calls = [],
+          triangles = [];
+        let previous = await new Promise(requestAnimationFrame);
+        for (let frame = 0; frame < 180; frame++) {
+          const now = await new Promise(requestAnimationFrame),
+            start = performance.now();
+          for (const subject of players) step(subject, frame);
+          // Match the game's bounded ten-hertz dynamic shadow refresh.
+          renderer.shadowMap.needsUpdate = frame % 6 === 0;
+          renderer.render(scene, camera);
+          if (frame >= 30) {
+            intervals.push(now - previous);
+            cpu.push(performance.now() - start);
+            calls.push(renderer.info.render.calls);
+            triangles.push(renderer.info.render.triangles);
+          }
+          previous = now;
+        }
+        const percentile = (values, p) =>
+          [...values].sort((a, b) => a - b)[
+            Math.floor((values.length - 1) * p)
+          ];
+        const gl = renderer.getContext(),
+          debug = gl.getExtension("WEBGL_debug_renderer_info");
+        const result = {
+          scope:
+            "Character-only studio; nine animated models and guns; excludes COASTLINE, networking and first-person effects",
+          lowDetail,
+          width: innerWidth,
+          height: innerHeight,
+          pixelRatio: renderer.getPixelRatio(),
+          samples: intervals.length,
+          renderedCharacters: drawn.size,
+          medianFrameMs: percentile(intervals, 0.5),
+          p95FrameMs: percentile(intervals, 0.95),
+          medianSubmissionMs: percentile(cpu, 0.5),
+          p95SubmissionMs: percentile(cpu, 0.95),
+          meanDrawCalls: Math.round(
+            calls.reduce((a, b) => a + b, 0) / calls.length,
+          ),
+          meanTriangles: Math.round(
+            triangles.reduce((a, b) => a + b, 0) / triangles.length,
+          ),
+          renderer: debug
+            ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)
+            : "Unavailable",
+        };
+        result.met60FpsTarget =
+          result.medianFrameMs <= 18 && result.p95FrameMs <= 25;
+        clear();
+        return result;
+      };
+      window.characterDisposalCheck = () => {
+        const memory = () => ({
+          textures: renderer.info.memory.textures,
+          geometries: renderer.info.memory.geometries,
+          programs: renderer.info.programs.length,
+        });
+        const cycle = () => {
+          clear();
+          camera.position.set(0, 2.35, -9.8);
+          camera.lookAt(0, 1.03, 1.4);
+          for (let i = 0; i < 9; i++) {
+            const subject = create(
+              i % 2 ? "soldiers" : "terrorists",
+              i % 3 === 0,
+            );
+            subject.root.position.set(
+              ((i % 3) - 1) * 2.1,
+              0,
+              Math.floor(i / 3) * 2,
+            );
+            step(subject, 30);
+            subject.root.userData.label.visible = true;
+            scene.add(subject.root);
+            displayed.push(subject.root);
+          }
+          renderer.render(scene, camera);
+          clear();
+          // Flush the renderer's previous render list after removing subjects.
+          renderer.render(scene, camera);
+          return memory();
+        };
+        cycle();
+        const baseline = cycle(),
+          samples = [];
+        for (let i = 0; i < 8; i++) samples.push(cycle());
+        return { baseline, samples, playersCreatedAfterWarmup: 72 };
+      };
+      try {
+        await loadAssets();
+        window.characterReady = true;
+        document.querySelector("#label").textContent =
+          "Compiled models loaded / ready for rig audit";
+      } catch (error) {
+        window.characterError = error.stack || error.message;
+        document.querySelector("#label").textContent = error.message;
+      }
+    </script>
+  </body>
+</html>

@@ -107,6 +107,10 @@ barrier(-17, -13, 4);
 crate(21, -20, 2, 2.4, 2);
 crate(30, -18, 3, 1.5, 2);
 barrier(16, -14, 1, 5);
+// Low, authored landmarks add useful cover while leaving the original routes open.
+add(B(-27, 0.48, -19, 2.2, 0.96, 2.2, "courtyardFountain"));
+add(B(27, 0.65, -24, 2.2, 1.3, 1.6, "harborMonument"));
+for (const x of [-7, 7]) add(B(x, 0.45, -1.5, 1.8, 0.9, 1.1, "quayCover"));
 crate(-10, -7, 1.8, 1.4, 2);
 crate(10, -8, 2, 1.5, 1.7);
 crate(-7, 12, 1.8, 1.3, 2);
@@ -163,6 +167,11 @@ export const COASTLINE = {
       { x: -33, z: 31 },
       { x: -26, z: 29 },
       { x: -20, z: 31 },
+      { x: -40, z: 12 },
+      { x: -23, z: 24 },
+      { x: -32, z: 25 },
+      { x: -22, z: 14 },
+      { x: -8, z: 34 },
     ],
     terrorists: [
       { x: 38, z: 20 },
@@ -170,6 +179,11 @@ export const COASTLINE = {
       { x: 33, z: 32 },
       { x: 26, z: 29 },
       { x: 20, z: 31 },
+      { x: 40, z: 12 },
+      { x: 23, z: 24 },
+      { x: 32, z: 25 },
+      { x: 22, z: 14 },
+      { x: 8, z: 34 },
     ],
   },
   sites: { A: { x: -24, z: -18, radius: 6 }, B: { x: 25, z: -19, radius: 6 } },

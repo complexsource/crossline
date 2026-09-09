@@ -261,6 +261,43 @@ export function radialTexture(kind) {
   gradient.addColorStop(1, "rgba(100,100,90,0)");
   x.fillStyle = gradient;
   x.fillRect(0, 0, 128, 128);
+  if (kind === "flash") {
+    x.clearRect(0, 0, 128, 128);
+    const flame = x.createRadialGradient(64, 64, 1, 64, 64, 61);
+    flame.addColorStop(0, "rgba(255,255,239,1)");
+    flame.addColorStop(0.17, "rgba(255,243,170,.96)");
+    flame.addColorStop(0.44, "rgba(255,171,61,.65)");
+    flame.addColorStop(1, "rgba(244,95,26,0)");
+    x.fillStyle = flame;
+    x.beginPath();
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2,
+        r = i % 3 === 0 ? 61 : 17 + (i % 2) * 10;
+      const px = 64 + Math.cos(a) * r,
+        py = 64 + Math.sin(a) * r;
+      i ? x.lineTo(px, py) : x.moveTo(px, py);
+    }
+    x.closePath();
+    x.fill();
+    x.fillStyle = gradient;
+    x.globalAlpha = 0.32;
+    x.fillRect(0, 0, 128, 128);
+    x.globalAlpha = 1;
+  }
+  if (kind === "smoke") {
+    x.clearRect(0, 0, 128, 128);
+    for (let i = 0; i < 12; i++) {
+      const a = i * 2.399,
+        px = 64 + Math.cos(a) * 23,
+        py = 64 + Math.sin(a) * 23;
+      const puff = x.createRadialGradient(px, py, 0, px, py, 30 + (i % 3) * 5);
+      puff.addColorStop(0, "rgba(221,223,210,.2)");
+      puff.addColorStop(0.4, "rgba(195,204,201,.12)");
+      puff.addColorStop(1, "rgba(173,184,180,0)");
+      x.fillStyle = puff;
+      x.fillRect(0, 0, 128, 128);
+    }
+  }
   if (kind === "impact") {
     x.strokeStyle = "rgba(35,30,24,.65)";
     for (let i = 0; i < 11; i++) {
@@ -271,6 +308,7 @@ export function radialTexture(kind) {
     }
   }
   const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
   radials.set(kind, tex);
   return tex;
 }

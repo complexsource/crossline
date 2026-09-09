@@ -388,12 +388,25 @@ export const WEAPONS = Object.fromEntries(
         interval,
         mag,
         reserve,
-        reload,
         recoil,
         spread,
         range,
         model,
         slot: type === "PISTOL" ? "secondary" : "primary",
+        // Preserve individual weapon cadence while shortening the whole reload cycle.
+        reload:
+          Math.round(
+            reload *
+              ({
+                PISTOL: 0.72,
+                SMG: 0.73,
+                RIFLE: 0.79,
+                SHOTGUN: 0.82,
+                SNIPER: 0.84,
+                HEAVY: 0.8,
+              }[type] || 1) *
+              100,
+          ) / 100,
         auto:
           ["SMG", "RIFLE", "HEAVY"].includes(type) ||
           ["cz75", "xm1014", "g3sg1", "scar20"].includes(id),

@@ -1,4 +1,5 @@
 import { io } from "socket.io-client";
+import { FireButton, actionBlocksFire } from "../shared/actions.js";
 import { COASTLINE, getMap, areaAt, surfaceAt } from "../shared/maps.js";
 import { TEAMS, TEAM_IDS } from "../shared/teams.js";
 import {
@@ -21,6 +22,7 @@ import {
   crossMarkup,
 } from "./settings.js";
 import { Sound } from "./audio.js";
+import { openDialog } from "./dialog.js";
 import "./style.css";
 
 const app = document.querySelector("#app"),
@@ -36,6 +38,9 @@ const esc = (value) =>
   );
 const sound = new Sound(settings),
   socket = io({ reconnectionAttempts: 5, timeout: 8000 });
+const fireButton = new FireButton();
+let pressId = 0,
+  predictedActionUntil = 0;
 let room = null,
   snapshot = null,
   local = null,
@@ -78,7 +83,7 @@ try {
 } catch {}
 const invite = new URLSearchParams(location.search).get("room") || "";
 const logo =
-  '<a class="brand" href="/" aria-label="Crossline home"><span class="brand-symbol">╱╱</span>CROSSLINE<small>02</small></a>';
+  '<a class="brand" href="/" aria-label="Crossline home"><span class="brand-symbol">╱╱</span>CROSSLINE<small title="Version 2">V2</small></a>';
 function toast(message) {
   let el = $("#toast");
   if (!el) {
@@ -140,6 +145,13 @@ function showHome() {
   $("#create").onclick = () => {
     if (getName()) showCreate();
   };
+  $(".shell").classList.add("home-shell");
+  const modeTag = document.createElement("p");
+  modeTag.className = "mode-tag";
+  modeTag.textContent = "COASTLINE • TEAM DEATHMATCH • 2–10 PLAYERS";
+  $(".intro > p").after(modeTag);
+  $("#settings").innerHTML = '<span aria-hidden="true">⚙</span> SETTINGS';
+  $("#how").innerHTML = 'HOW TO PLAY <span aria-hidden="true">↗</span>';
   $("#join").onclick = () => {
     if (getName())
       call("join", { name, code: $("#code").value.trim().toUpperCase() });
@@ -152,7 +164,11 @@ function showHome() {
     if (e.key === "Enter") $("#join").click();
   };
   $("#name").onkeydown = (e) => {
-    if (e.key === "Enter") $("#create").click();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      // A shared invitation already identifies a room; Enter should use it.
+      $($("#code").value.trim() ? "#join" : "#create").click();
+    }
   };
 }
 function mapCard() {
@@ -265,6 +281,24 @@ async function ensureAssets() {
     if (!graphics) {
       graphics = new Renderer(canvas, settings);
       graphics.setQuality(settings.quality);
+      graphics.onGrenadeBounce = (position) => {
+        if (!local || !playing) return;
+        const dx = position.x - local.x,
+          dz = position.z - local.z,
+          distance = Math.hypot(dx, dz);
+        if (distance > 22) return;
+        sound.play("grenadeBounce", {
+          volume: Math.max(0, 1 - distance / 22),
+          pan: Math.max(
+            -1,
+            Math.min(
+              1,
+              (dx * Math.cos(local.yaw) - dz * Math.sin(local.yaw)) /
+                Math.max(1, distance),
+            ),
+          ),
+        });
+      };
     }
     loadText = "Building COASTLINE";
     loadProgress = 0.94;
@@ -350,19 +384,27 @@ function controlsMarkup() {
     .join("")}</div>`;
 }
 function showGuide(inMatch = true) {
-  const el = document.createElement("div");
+  if ($("#guide")) return;
+  const el = document.createElement("dialog");
   el.className = "modal";
   el.id = "guide";
-  el.innerHTML = `<section class="guide-card panel"><div class="eyebrow">A QUICK FIELD GUIDE</div><h2>KNOW YOUR MOVES.</h2><p class="muted">Move with the keyboard. Look with the mouse. Enemy kills earn your team one point. Highest score after 10 minutes wins.</p>${controlsMarkup()}<div class="guide-notes"><p><b>GRENADES</b> Select with ${k("grenade")}, cycle to HE, Flash or Smoke, then left-click to throw.</p><p><b>KEEP FIGHTING</b> Respawn in 3 seconds. Equipment refills. Team damage is off.</p><p><b>OBJECTIVES</b> Bomb equipment is reserved for a future Bomb/Defuse mode, not Team Deathmatch.</p></div>${inMatch ? '<label class="check"><input id="hide-guide" type="checkbox">Don’t show again</label>' : ""}<button id="guide-close" class="primary">GOT IT <span>↗</span></button></section>`;
+  el.innerHTML = `<section class="guide-card panel"><div class="eyebrow">A QUICK FIELD GUIDE</div><h2 id="guide-title">KNOW YOUR MOVES.</h2><p class="muted">Move with the keyboard. Look with the mouse. Enemy kills earn your team one point. Highest score after 10 minutes wins.</p>${controlsMarkup()}<div class="guide-notes"><p><b>GRENADES</b> Select with ${k("grenade")}, cycle to HE, Flash or Smoke, then ${k("shoot")} to throw.</p><p><b>KEEP FIGHTING</b> Respawn in 3 seconds. Equipment refills. Team damage is off.</p><p><b>OBJECTIVES</b> Bomb equipment is reserved for a future Bomb/Defuse mode, not Team Deathmatch.</p></div>${inMatch ? '<label class="check"><input id="hide-guide" type="checkbox">Don’t show again</label>' : ""}<button id="guide-close" class="primary">GOT IT <span>↗</span></button></section>`;
   document.body.append(el);
-  el.querySelector("#guide-close").onclick = () => {
+  const close = (enterMatch = false) => {
     if (inMatch) {
       settings.hideGuide = !!$("#hide-guide")?.checked;
       saveSettings();
     }
-    el.remove();
-    if (inMatch) captureMouse();
+    dialog.close();
+    if (enterMatch && inMatch) captureMouse();
   };
+  el.querySelector("#guide-close").onclick = () => close(true);
+  const dialog = openDialog(el, {
+    labelledBy: "guide-title",
+    initialFocus: "#guide-close",
+    // Escape dismisses the guide without recapturing the pointer.
+    onDismiss: () => close(),
+  });
 }
 function showMatch() {
   page = "match";
@@ -410,12 +452,21 @@ async function captureMouse() {
     }
   }
 }
-socket.on("connect", () => {
-  if (!room && page === "home") showHome();
+function updateServerStatus(connected) {
+  const status = $(".online");
+  if (status) {
+    status.setAttribute("role", "status");
+    status.innerHTML = connected
+      ? "<i></i>SERVER ONLINE"
+      : '<i class="offline"></i>SERVER OFFLINE';
+  }
+}
+// Connection status must not rebuild the form and erase an in-progress name/code.
+socket.on("connect", () => updateServerStatus(true));
+socket.on("connect_error", () => {
+  updateServerStatus(false);
+  toast("Cannot reach the server. Check your connection.");
 });
-socket.on("connect_error", () =>
-  toast("Cannot reach the server. Check your connection."),
-);
 socket.on("disconnect", () => {
   room = null;
   local = null;
@@ -461,6 +512,17 @@ socket.on("state", (state) => {
   const own = state.players.find((p) => p.id === socket.id);
   if (!own) return;
   graphics.sync(state, socket.id);
+  if (own.hp <= 0 || (local && local.weapon !== own.weapon))
+    sound.cancelReload();
+  if (
+    !local ||
+    local.spawnId !== own.spawnId ||
+    local.fireEpoch !== own.fireEpoch ||
+    own.hp <= 0
+  ) {
+    cancelFire();
+    predictedActionUntil = 0;
+  }
   if (!local || local.spawnId !== own.spawnId) {
     local = { ...own };
     seq = Math.max(own.ack, seq);
@@ -497,6 +559,11 @@ socket.on("fx", (event) => {
     feed.unshift({ ...event, at: performance.now() });
     feed = feed.slice(0, 5);
   }
+  if (
+    event.id === socket.id &&
+    ["throw", "draw", "reload", "drop", "pickup"].includes(event.type)
+  )
+    cancelFire();
   const pos = event.origin || event,
     dx = (pos.x ?? local?.x ?? 0) - (local?.x || 0),
     dz = (pos.z ?? local?.z ?? 0) - (local?.z || 0),
@@ -516,7 +583,9 @@ socket.on("fx", (event) => {
       volume: Math.max(0.02, 1 - distance / 65),
       pan,
     });
-  else if (["explosion", "flashbang", "smoke"].includes(event.type))
+  else if (
+    ["explosion", "flashbang", "smoke", "grenadeBounce"].includes(event.type)
+  )
     sound.play(event.type, { volume: Math.max(0.03, 1 - distance / 45), pan });
   else if (event.id === socket.id || event.type === "pickup")
     sound.play(event.type, { weapon: event.weapon });
@@ -530,7 +599,9 @@ socket.on("hit", (data) => {
     if ($("#confirmation"))
       $("#confirmation").textContent = data.headshot
         ? "HEADSHOT · ENEMY ELIMINATED"
-        : "ENEMY ELIMINATED";
+        : data.weapon === "he"
+          ? "✹ HE GRENADE · ENEMY ELIMINATED"
+          : "ENEMY ELIMINATED";
   }
 });
 socket.on("hurt", () => (hurtUntil = performance.now() + 230));
@@ -558,6 +629,20 @@ function resetInput() {
   const { yaw, pitch } = input;
   input = { ...emptyInput(), yaw, pitch };
   scoreboard = false;
+  cancelFire();
+  fireButton.release();
+}
+function cancelFire() {
+  input.shoot = false;
+  wasFiring = false;
+  fireButton.cancel();
+}
+function canStartFire() {
+  return (
+    local &&
+    !actionBlocksFire(local) &&
+    performance.now() >= predictedActionUntil
+  );
 }
 document.addEventListener("pointerlockchange", () => {
   locked = document.pointerLockElement === canvas;
@@ -593,8 +678,7 @@ document.addEventListener("contextmenu", (e) => {
 function feedbackShot(now) {
   if (
     !local ||
-    local.hp <= 0 ||
-    local.reload ||
+    !canStartFire() ||
     !(local.ammo.mag > 0 || local.weapon === "knife") ||
     !(isFirearm(local.weapon) || local.weapon === "knife") ||
     now < fxAt
@@ -612,6 +696,11 @@ function control(code, down, repeat = false) {
     ([, key]) => key === code,
   )?.[0];
   if (!action) return false;
+  if (action === "shoot" && !down) {
+    fireButton.release();
+    input.shoot = false;
+    return true;
+  }
   if (
     action === "scoreboard" &&
     (!$("#chat-input") || document.activeElement !== $("#chat-input"))
@@ -620,6 +709,30 @@ function control(code, down, repeat = false) {
     return true;
   }
   if (!locked) return false;
+  if (action === "shoot") {
+    if (!repeat && fireButton.press(canStartFire())) {
+      input.shoot = true;
+      socket.emit("action", {
+        type: "fire",
+        value: {
+          yaw: input.yaw,
+          pitch: input.pitch,
+          aim: input.aim,
+          spawnId: local.spawnId,
+          weapon: local.weapon,
+          fireEpoch: local.fireEpoch,
+          pressId: ++pressId,
+        },
+      });
+      feedbackShot(performance.now());
+      if (GRENADES.includes(local.weapon)) {
+        cancelFire();
+        input.aim = false;
+        predictedActionUntil = performance.now() + 750;
+      }
+    }
+    return true;
+  }
   if (
     [
       "forward",
@@ -629,31 +742,24 @@ function control(code, down, repeat = false) {
       "jump",
       "run",
       "crouch",
-      "shoot",
       "aim",
     ].includes(action)
   ) {
     input[action] = down;
-    if (action === "shoot" && down && !repeat) {
-      socket.emit("action", {
-        type: "fire",
-        value: {
-          yaw: input.yaw,
-          pitch: input.pitch,
-          aim: input.aim,
-          spawnId: local?.spawnId,
-        },
-      });
-      feedbackShot(performance.now());
-    }
     return true;
   }
   if (!down || repeat) return true;
+  if (local?.action === "throw" && local.actionTime > 0) return true;
   if (action === "reload" || action === "drop" || action === "use") {
+    cancelFire();
+    if (action !== "reload") sound.cancelReload();
+    input.aim = false;
+    predictedActionUntil = performance.now() + 200;
     socket.emit("action", { type: action === "use" ? "pickup" : action });
     return true;
   }
   if (action === "objective") {
+    cancelFire();
     toast("Objective equipment is not used in Team Deathmatch.");
     return true;
   }
@@ -664,7 +770,9 @@ function control(code, down, repeat = false) {
     return true;
   }
   input.aim = false;
-  input.shoot = false;
+  cancelFire();
+  sound.cancelReload();
+  predictedActionUntil = performance.now() + 200;
   fxAt = performance.now() + 220;
   socket.emit(
     "action",
@@ -782,7 +890,7 @@ function updateHud(now) {
     ? feed
         .map(
           (f) =>
-            `<div><b class="${f.team}">${esc(f.killer)}</b><span>${f.headshot ? "⌖ " : ""}${esc(WEAPONS[f.weapon]?.name)}</span><b>${esc(f.victim)}</b></div>`,
+            `<div><b class="${f.team}">${esc(f.killer)}</b><span>${f.weapon === "he" ? '<i aria-label="Grenade kill">✹</i> ' : f.headshot ? "⌖ " : ""}${esc(WEAPONS[f.weapon]?.name)}</span><b>${esc(f.victim)}</b></div>`,
         )
         .join("")
     : "";
@@ -829,7 +937,13 @@ function frame(now) {
     while (accumulator >= TICK) {
       accumulator -= TICK;
       if (local.hp > 0) {
-        const cmd = { ...input, seq: ++seq, spawnId: local.spawnId };
+        const cmd = {
+          ...input,
+          seq: ++seq,
+          spawnId: local.spawnId,
+          fireEpoch: local.fireEpoch,
+          weapon: local.weapon,
+        };
         socket.volatile.emit("input", cmd);
         move(local, cmd, TICK, COASTLINE.boxes);
         pending.push(cmd);
@@ -843,6 +957,8 @@ function frame(now) {
     if (
       locked &&
       input.shoot &&
+      fireButton.active &&
+      canStartFire() &&
       local.hp > 0 &&
       !local.reload &&
       (local.ammo.mag > 0 || local.weapon === "knife") &&

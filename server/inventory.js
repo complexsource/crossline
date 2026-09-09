@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { WEAPONS, GRENADES, isFirearm } from "../shared/weapons.js";
+import { beginAction, fireBarrier } from "./actions.js";
 export function resetInventory(p) {
   p.slots = { primary: p.primary, secondary: p.secondary, knife: "knife" };
   p.ammo = {};
@@ -9,6 +10,8 @@ export function resetInventory(p) {
   p.weapon = p.primary;
   p.previousWeapon = p.secondary;
   p.reloadAt = 0;
+  p.returnWeapon = null;
+  fireBarrier(p);
 }
 export const owned = (p) => [
   ...Object.values(p.slots).filter(Boolean),
@@ -16,13 +19,12 @@ export const owned = (p) => [
 ];
 export function equip(p, id, now) {
   if (!owned(p).includes(id) || p.weapon === id) return false;
+  if (GRENADES.includes(id) && !GRENADES.includes(p.weapon))
+    p.returnWeapon = p.weapon;
   p.previousWeapon = p.weapon;
   p.weapon = id;
   p.reloadAt = 0;
-  p.nextFire = Math.max(p.nextFire, now + 0.2);
-  p.wasShooting = true;
-  p.action = "draw";
-  p.actionUntil = now + 0.28;
+  beginAction(p, "draw", now, 0.2);
   return true;
 }
 export function drop(room, p, now, { death = false } = {}) {
@@ -45,9 +47,7 @@ export function drop(room, p, now, { death = false } = {}) {
   p.slots[slot] = null;
   p.weapon = p.slots.primary || p.slots.secondary || "knife";
   p.reloadAt = 0;
-  p.nextFire = Math.max(p.nextFire, now + 0.2);
-  p.action = death ? "death" : "drop";
-  p.actionUntil = now + 0.3;
+  beginAction(p, death ? "death" : "drop", now, death ? 3 : 0.2);
   return item;
 }
 export function nearestPickup(room, p, canSee = () => true) {
@@ -76,5 +76,6 @@ export function pickup(room, p, id, now, canSee) {
   p.slots[slot] = item.weapon;
   p.ammo[item.weapon] = { ...item.ammo };
   equip(p, item.weapon, now);
+  beginAction(p, "pickup", now, 0.2);
   return true;
 }

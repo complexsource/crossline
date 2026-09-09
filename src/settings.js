@@ -1,3 +1,5 @@
+import { openDialog } from "./dialog.js";
+
 export const BINDINGS = {
   forward: "KeyW",
   back: "KeyS",
@@ -120,7 +122,8 @@ const groups = {
   ],
   GAME: ["scoreboard", "chat"],
 };
-let capture = null;
+let capture = null,
+  settingsDialog = null;
 function range(key, label, min, max, step) {
   return `<label class="setting"><span>${label}<output>${settings[key]}</output></span><input data-setting="${key}" type="range" min="${min}" max="${max}" step="${step}" value="${settings[key]}"></label>`;
 }
@@ -131,11 +134,15 @@ function select(key, label, values) {
   return `<label class="setting"><span>${label}</span><select data-setting="${key}">${values.map((v) => `<option value="${v}" ${settings[key] === v ? "selected" : ""}>${String(v).toUpperCase()}</option>`).join("")}</select></label>`;
 }
 export function showSettings(category = "controls", onClose = () => {}) {
-  document.querySelector("#settings-modal")?.remove();
-  const modal = document.createElement("div");
+  const replacing = document.querySelector("#settings-modal")?.open,
+    returnFocus = replacing
+      ? settingsDialog?.returnFocus
+      : document.activeElement;
+  settingsDialog?.close(false);
+  const modal = document.createElement("dialog");
   modal.id = "settings-modal";
   modal.className = "modal";
-  modal.innerHTML = `<section class="settings-card panel"><div class="dialog-heading"><div><div class="eyebrow">MAKE IT YOURS</div><h2>SETTINGS</h2></div><button id="settings-close" class="subtle">CLOSE ×</button></div><nav class="settings-tabs">${["controls", "graphics", "audio", "gameplay"].map((c) => `<button data-category="${c}" class="${c === category ? "selected" : ""}">${c.toUpperCase()}</button>`).join("")}</nav><div id="settings-content"></div><p id="binding-status" role="status"></p></section>`;
+  modal.innerHTML = `<section class="settings-card panel"><div class="dialog-heading"><div><div class="eyebrow">MAKE IT YOURS</div><h2 id="settings-title">SETTINGS</h2></div><button id="settings-close" class="subtle">CLOSE ×</button></div><nav class="settings-tabs" aria-label="Settings categories">${["controls", "graphics", "audio", "gameplay"].map((c) => `<button data-category="${c}" aria-pressed="${c === category}" class="${c === category ? "selected" : ""}">${c.toUpperCase()}</button>`).join("")}</nav><div id="settings-content"></div><p id="binding-status" role="status"></p></section>`;
   document.body.append(modal);
   const panel = modal.querySelector("#settings-content");
   if (category === "controls")
@@ -157,7 +164,8 @@ export function showSettings(category = "controls", onClose = () => {}) {
     panel.innerHTML = `<div class="cross-preview"><div class="crosshair" style="${crossStyle()}">${crossMarkup}</div><span>LIVE CROSSHAIR PREVIEW</span></div><div class="setting-grid"><label class="setting"><span>Crosshair color</span><input type="color" data-setting="crossColor" value="${settings.crossColor}"></label>${range("crossSize", "Size", 2, 18, 1)}${range("crossThickness", "Thickness", 1, 5, 1)}${range("crossGap", "Gap", 0, 15, 1)}${check("crossDot", "Center dot")}${check("crossDynamic", "Dynamic crosshair")}${check("hitmarker", "Hit markers")}${check("killfeed", "Kill feed")}${check("showFps", "Show FPS")}${check("showPing", "Show ping")}</div>`;
   const close = () => {
     capture = null;
-    modal.remove();
+    settingsDialog?.close();
+    settingsDialog = null;
     onClose();
   };
   modal.querySelector("#settings-close").onclick = close;
@@ -210,12 +218,14 @@ export function showSettings(category = "controls", onClose = () => {}) {
         "Fullscreen is unavailable in this browser.";
     }
   });
-  modal.onkeydown = (e) => {
-    if (e.code === "Escape" && !capture) {
-      e.stopPropagation();
-      close();
-    }
-  };
+  settingsDialog = openDialog(modal, {
+    labelledBy: "settings-title",
+    initialFocus: replacing
+      ? `[data-category="${category}"]`
+      : "#settings-close",
+    returnFocus,
+    onDismiss: close,
+  });
 }
 function bindEvent(e, code) {
   if (!capture) return;

@@ -1,4 +1,4 @@
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { createGameServer } from "../server/index.js";
@@ -174,11 +174,27 @@ try {
     () => document.querySelector("#weapon-name").textContent === "HE GRENADE",
   );
   await a.waitForTimeout(320);
-  await a.mouse.click(700, 450);
+  const beforeThrowAmmo = pa.ammo.m4a4.mag;
+  await a.mouse.down();
   await a.waitForFunction(() =>
     document.querySelector("#weapon-slots").textContent.includes("HE 0"),
   );
   await a.waitForTimeout(750);
+  await a.waitForFunction(
+    () => document.querySelector("#weapon-name").textContent === "M4A4",
+  );
+  await a.waitForTimeout(350);
+  assert.equal(
+    pa.ammo.m4a4.mag,
+    beforeThrowAmmo,
+    "holding grenade click must not fire returned rifle",
+  );
+  await a.mouse.up();
+  await a.mouse.click(700, 450);
+  await expect.poll(() => pa.ammo.m4a4.mag).toBe(beforeThrowAmmo - 1);
+  console.log(
+    "Passed: real held grenade click returns rifle idle; a fresh click fires exactly once.",
+  );
   await a.keyboard.press("Digit4");
   await a.waitForFunction(
     () =>
@@ -189,7 +205,13 @@ try {
   await a.waitForFunction(() =>
     document.querySelector("#weapon-slots").textContent.includes("FLASH 0"),
   );
-  await a.waitForTimeout(750);
+  // Input during an active throw is deliberately rejected. Wait for the
+  // authoritative return to reach the HUD, not a wall-clock guess that can
+  // race a delayed simulation tick/snapshot on a busy rendering machine.
+  await a.waitForFunction(
+    () => document.querySelector("#weapon-name").textContent === "M4A4",
+  );
+  await expect.poll(() => server.game.now() >= pa.actionUntil).toBe(true);
   await a.keyboard.press("Digit4");
   await a.waitForFunction(
     () =>
@@ -200,8 +222,14 @@ try {
   await a.waitForFunction(() =>
     document.querySelector("#weapon-slots").textContent.includes("SMOKE 0"),
   );
-  await a.waitForTimeout(2600);
-  assert.equal(room.smokes.length, 1);
+  // Observe authoritative detonation, not one wall-clock sample only 300 ms
+  // after the fuse; concurrent rendering can delay browser/server scheduling.
+  await expect
+    .poll(() => room.smokes.length, {
+      message: "server creates smoke after its authoritative grenade fuse",
+      timeout: 8000,
+    })
+    .toBe(1);
   await a.keyboard.down("Tab");
   await a.locator("#board.visible").waitFor();
   await a.screenshot({ path: "test-results/scoreboard.png" });
@@ -249,17 +277,24 @@ try {
   console.log("Browser errors:", errors);
   console.log(
     "Rooms:",
-    [...server.game.rooms.values()].map((r) => ({
-      state: r.state,
-      players: [...r.players.values()].map((p) => ({
-        name: p.name,
-        hp: p.hp,
-        x: p.x,
-        z: p.z,
-        weapon: p.weapon,
-        input: p.input,
+    JSON.stringify(
+      [...server.game.rooms.values()].map((r) => ({
+        state: r.state,
+        players: [...r.players.values()].map((p) => ({
+          name: p.name,
+          hp: p.hp,
+          x: p.x,
+          z: p.z,
+          weapon: p.weapon,
+          action: p.action,
+          actionTime: p.actionUntil - server.game.now(),
+          grenades: p.grenades,
+          input: p.input,
+        })),
       })),
-    })),
+      null,
+      2,
+    ),
   );
   throw error;
 } finally {

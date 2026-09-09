@@ -12,9 +12,11 @@ import {
   disposeModel,
 } from "./models.js";
 import { WEAPONS, eyeHeight } from "../shared/game.js";
+import { GRENADE_THROW_SECONDS } from "../shared/actions.js";
 import { groundAt } from "../shared/maps.js";
 import { smokeVolume } from "./smoke.js";
 import { assetMaterials } from "./assets.js";
+import { weaponPose, reloadPose, smooth } from "./weapon-motion.js";
 export const QUALITY = {
   low: { dpr: 0.85, shadow: 0, particles: 45, detail: 24 },
   medium: { dpr: 1, shadow: 1024, particles: 100, detail: 42 },
@@ -34,7 +36,7 @@ export class Renderer {
     this.renderer.shadowMap.autoUpdate = false;
     this.nextShadow = 0;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(78, 1, 0.06, 1200);
     this.camera.rotation.order = "YXZ";
@@ -42,10 +44,16 @@ export class Renderer {
     this.gunCamera = new THREE.PerspectiveCamera(60, 1, 0.025, 10);
     this.gunCamera.layers.set(1);
     this.viewScene = new THREE.Scene();
-    this.viewScene.add(new THREE.HemisphereLight(0xd9e9ff, 0x756951, 2));
-    const light = new THREE.DirectionalLight(0xffebc6, 3);
-    light.position.set(-2, 4, 1);
+    this.viewScene.add(new THREE.HemisphereLight(0xd4e4f4, 0x263329, 0.65));
+    const light = new THREE.DirectionalLight(0xffe3be, 3.2);
+    light.position.set(-3, 5, 1);
     this.viewScene.add(light);
+    const edge = new THREE.DirectionalLight(0x83b9d6, 1.8);
+    edge.position.set(3, 1, -3);
+    this.viewScene.add(edge);
+    this.muzzleLight = new THREE.PointLight(0xffc57b, 0, 1.8);
+    this.muzzleLight.position.set(0.1, -0.05, -0.8);
+    this.viewScene.add(this.muzzleLight);
     this.viewScene.traverse((o) => o.layers.enable(1));
     const room = new RoomEnvironment(),
       pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -53,10 +61,11 @@ export class Renderer {
     this.scene.environment = this.viewScene.environment =
       this.environment.texture;
     this.scene.environmentIntensity = 0.35;
-    this.viewScene.environmentIntensity = 0.7;
+    this.viewScene.environmentIntensity = 0.6;
     room.dispose();
     pmrem.dispose();
     this.players = new Map();
+    this.remoteWeaponActions = new Map();
     this.grenades = new Map();
     this.drops = new Map();
     this.volumes = new Map();
@@ -67,6 +76,12 @@ export class Renderer {
     this.flashUntil = 0;
     this.kick = 0;
     this.weapon = "";
+    this.aimBlend = 0;
+    this.sway = new THREE.Vector2();
+    this.lastLook = null;
+    this.landing = 0;
+    this.wasGrounded = true;
+    this.throwUntil = 0;
     this.spawnId = 0;
     this.quality = "high";
     try {
@@ -153,6 +168,9 @@ export class Renderer {
     if (this.settings) this.setQuality(this.quality);
   }
   clearPlayers() {
+    this.remoteWeaponActions?.clear();
+    this.throwUntil = 0;
+    this.throwWeapon = null;
     for (const m of this.players?.values() || []) {
       this.scene.remove(m);
       m.userData.labelTexture.dispose();
@@ -191,26 +209,70 @@ export class Renderer {
     return c.toDataURL("image/webp", 0.78);
   }
   menuCamera() {
-    this.camera.fov = 55;
+    this.camera.fov = 48;
     this.camera.updateProjectionMatrix();
-    this.camera.position.set(60, 55, 67);
-    this.camera.lookAt(0, 0, -1);
+    this.camera.position.set(58, 41, 62);
+    this.camera.lookAt(-1, 2, -5);
   }
-  setWeapon(id) {
-    if (id === this.weapon) return;
-    this.weapon = id;
-    if (this.gun) {
-      this.viewScene.remove(this.gun);
-      disposeModel(this.gun);
+  setWeapon(id, team = "soldiers") {
+    if (id === this.weapon && team === this.weaponTeam) return;
+    if (this.holster) {
+      this.holster.removeFromParent();
+      disposeModel(this.holster);
     }
-    this.gun = makeGun(id, true);
+    this.weapon = id;
+    this.weaponTeam = team;
+    if (this.gun) {
+      this.holster = this.gun;
+      this.holster.userData.flash.visible = false;
+      this.holsterUntil = this.time + 0.12;
+    }
+    this.gun = makeGun(id, true, team);
     this.viewScene.add(this.gun);
   }
   localShot(id) {
+    // Defensive cleanup for delayed effect packets. Authoritative action gates
+    // now prohibit gunfire until both throw and weapon draw have completed.
+    if (this.throwUntil > this.time && id !== this.throwWeapon) {
+      this.throwUntil = 0;
+      this.throwWeapon = null;
+      this.setWeapon(id, this.weaponTeam);
+    }
     this.kick = 1;
     this.flashUntil = this.time + 0.055;
     if (this.gun) this.gun.userData.flash.rotation.z = Math.random() * Math.PI;
+    if (id === "dualberettas" && this.gun?.userData.muzzle) {
+      this.dualHand = !this.dualHand;
+      this.gun.userData.muzzle.position.x = this.dualHand ? -0.126 : 0.126;
+    }
     if (id !== "knife") {
+      if (
+        this.gun?.userData.muzzle &&
+        this.quality !== "low" &&
+        this.options.effects !== false
+      ) {
+        const smoke = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: radialTexture("smoke"),
+            color: 0xc2c5bb,
+            transparent: true,
+            opacity: 0.15,
+            depthWrite: false,
+          }),
+        );
+        this.gun.updateMatrixWorld(true);
+        smoke.position.copy(
+          this.gun.userData.muzzle.getWorldPosition(new THREE.Vector3()),
+        );
+        smoke.scale.setScalar(WEAPONS[id].suppressed ? 0.065 : 0.12);
+        smoke.layers.set(1);
+        this.addEffect(smoke, 0.28, {
+          smoke: true,
+          view: true,
+          opacity: 0.15,
+          v: new THREE.Vector3(0, 0.12, 0),
+        });
+      }
       const p = this.camera.position
         .clone()
         .add(
@@ -220,6 +282,32 @@ export class Renderer {
         );
       this.casing(p, this.camera.rotation.y);
     }
+  }
+  remoteWeaponAction(p) {
+    const action = this.remoteWeaponActions.get(p.id);
+    if (!action) return null;
+    if (
+      action.until <= this.time ||
+      p.hp <= 0 ||
+      (action.spawnId !== undefined && action.spawnId !== p.spawnId) ||
+      (action.kind === "shot" && p.weapon === action.weapon)
+    ) {
+      this.remoteWeaponActions.delete(p.id);
+      return null;
+    }
+    action.spawnId ??= p.spawnId;
+    return action;
+  }
+  setRemoteWeapon(mesh, id) {
+    const u = mesh.userData;
+    if (id === u.weapon) return;
+    if (u.gun) {
+      u.weaponPivot.remove(u.gun);
+      disposeModel(u.gun);
+    }
+    u.gun = makeGun(id);
+    u.weaponPivot.add(u.gun);
+    u.weapon = id;
   }
   sync(state, id) {
     const ids = new Set();
@@ -261,15 +349,10 @@ export class Renderer {
         : p;
       u.state = p;
       u.received = this.time;
-      if (p.weapon !== u.weapon) {
-        if (u.gun) {
-          u.weaponPivot.remove(u.gun);
-          disposeModel(u.gun);
-        }
-        u.gun = makeGun(p.weapon);
-        u.weaponPivot.add(u.gun);
-        u.weapon = p.weapon;
-      }
+      this.setRemoteWeapon(
+        mesh,
+        this.remoteWeaponAction(p)?.weapon || p.weapon,
+      );
     }
     for (const [key, m] of this.players)
       if (!ids.has(key)) {
@@ -279,17 +362,26 @@ export class Renderer {
         disposeModel(m);
         this.players.delete(key);
       }
+    for (const key of this.remoteWeaponActions.keys())
+      if (!ids.has(key)) this.remoteWeaponActions.delete(key);
     const gs = new Set();
     for (const g of state.grenades) {
       gs.add(g.id);
       let mesh = this.grenades.get(g.id);
       if (!mesh) {
         mesh = makeGrenade(g.kind);
+        mesh.position.set(g.x, g.y, g.z);
         this.scene.add(mesh);
         this.grenades.set(g.id, mesh);
       }
-      mesh.position.set(g.x, g.y, g.z);
-      mesh.rotation.set(this.time * 5, this.time * 3, 0);
+      const data = mesh.userData,
+        dy = data.target ? g.y - data.target.y : 0;
+      // Bounce sounds come from server collision events, including side walls.
+      data.previous = mesh.position.clone();
+      data.target = new THREE.Vector3(g.x, g.y, g.z);
+      data.received = this.time;
+      data.spin = data.previous.distanceTo(data.target) > 0.02 ? 1 : 0.05;
+      data.dy = dy;
     }
     for (const [key, m] of this.grenades)
       if (!gs.has(key)) {
@@ -345,11 +437,11 @@ export class Renderer {
       const e = this.effects.shift();
       this.removeEffect(e);
     }
-    this.scene.add(mesh);
+    (extra.view ? this.viewScene : this.scene).add(mesh);
     this.effects.push({ mesh, life, max: life, ...extra });
   }
   removeEffect(e) {
-    this.scene.remove(e.mesh);
+    e.mesh.removeFromParent();
     if (e.dispose) e.mesh.geometry.dispose();
     if (!e.sharedMaterial) e.mesh.material?.dispose();
   }
@@ -384,8 +476,44 @@ export class Renderer {
     });
   }
   fx(event, localId) {
+    if (event.type === "throw" && WEAPONS[event.weapon]?.type === "GRENADE") {
+      if (event.id === localId) {
+        this.throwUntil = this.time + GRENADE_THROW_SECONDS;
+        this.throwWeapon = event.weapon;
+      } else {
+        const mesh = this.players.get(event.id);
+        this.remoteWeaponActions.set(event.id, {
+          kind: "throw",
+          weapon: event.weapon,
+          until: this.time + GRENADE_THROW_SECONDS,
+          spawnId: mesh?.userData.state?.spawnId,
+        });
+        if (mesh) this.setRemoteWeapon(mesh, event.weapon);
+      }
+    }
     if (event.type === "shot") {
+      if (
+        event.id === localId &&
+        this.throwUntil > this.time &&
+        event.weapon !== this.throwWeapon
+      ) {
+        this.throwUntil = 0;
+        this.throwWeapon = null;
+        this.setWeapon(event.weapon, this.weaponTeam);
+      }
       const mesh = this.players.get(event.id);
+      const action = this.remoteWeaponActions.get(event.id);
+      if (action && event.weapon !== action.weapon) {
+        // Bridge the event/snapshot gap so an older grenade snapshot cannot put
+        // it straight back into the firing hand. No inventory state is changed.
+        this.remoteWeaponActions.set(event.id, {
+          kind: "shot",
+          weapon: event.weapon,
+          until: this.time + 0.16,
+          spawnId: mesh?.userData.state?.spawnId,
+        });
+        if (mesh) this.setRemoteWeapon(mesh, event.weapon);
+      }
       if (mesh) mesh.userData.flashAt = this.time + 0.08;
       for (const end of event.ends) {
         const geometry = new THREE.BufferGeometry().setFromPoints([
@@ -422,7 +550,17 @@ export class Renderer {
         }
       }
       if (event.weapon !== "knife") {
-        this.smoke(event.origin, 0.2, 0.5);
+        const muzzle =
+          mesh?.userData.gun?.userData.muzzle ||
+          (event.id === localId ? this.gun?.userData.muzzle : null);
+        if (mesh && muzzle) {
+          const position = muzzle.getWorldPosition(new THREE.Vector3());
+          this.smoke(
+            position,
+            WEAPONS[event.weapon].suppressed ? 0.08 : 0.16,
+            0.4,
+          );
+        }
         if (mesh)
           this.casing(
             new THREE.Vector3(
@@ -434,7 +572,14 @@ export class Renderer {
           );
       }
     }
-    if (event.type === "explosion") {
+    if (event.type === "flashbang") {
+      const light = new THREE.PointLight(0xecf6ff, 35, 10);
+      light.position.set(event.x, event.y, event.z);
+      this.addEffect(light, 0.16, { lightIntensity: 35 });
+      for (let i = 0; i < 7; i++) this.particle(event, 0xe4e7d8, 0.2, 2);
+    }
+    if (event.type === "explosion" || event.type === "bombExplosion") {
+      const power = event.type === "bombExplosion" ? 2 : 1;
       this.shake = Math.max(
         this.shake,
         0.055 *
@@ -461,12 +606,23 @@ export class Renderer {
             y: event.y + Math.random(),
             z: event.z + (Math.random() - 0.5) * 2,
           },
-          2,
+          2 * power,
           2.3,
         );
-      const light = new THREE.PointLight(0xffa533, 45, 12);
+      const flare = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: radialTexture("flash"),
+          color: 0xffb564,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      );
+      flare.position.set(event.x, event.y + 0.3, event.z);
+      flare.scale.setScalar(3.6 * power);
+      this.addEffect(flare, 0.22);
+      const light = new THREE.PointLight(0xffa533, 45 * power, 12 * power);
       light.position.set(event.x, event.y + 0.5, event.z);
-      this.addEffect(light, 0.25);
+      this.addEffect(light, 0.25, { lightIntensity: 45 * power });
     }
   }
   particle(pos, color, life, speed) {
@@ -495,9 +651,32 @@ export class Renderer {
       this.nextShadow = t + 0.1;
     }
     this.shake *= Math.exp(-9 * dt);
-    this.kick *= Math.exp(-15 * dt);
+    this.kick *= Math.exp(-17 * dt);
+    this.landing *= Math.exp(-14 * dt);
     for (const p of this.players.values()) p.visible = playing;
     if (playing && local) {
+      if (!this.wasGrounded && local.grounded) this.landing = 0.045;
+      this.wasGrounded = local.grounded;
+      if (this.lastLook && this.spawnId === local.spawnId) {
+        const yaw = Math.atan2(
+          Math.sin(local.yaw - this.lastLook.x),
+          Math.cos(local.yaw - this.lastLook.x),
+        );
+        this.sway.x +=
+          (THREE.MathUtils.clamp(yaw * 1.4, -0.05, 0.05) - this.sway.x) *
+          Math.min(1, dt * 14);
+        this.sway.y +=
+          (THREE.MathUtils.clamp(
+            (local.pitch - this.lastLook.y) * 1.4,
+            -0.04,
+            0.04,
+          ) -
+            this.sway.y) *
+          Math.min(1, dt * 14);
+      }
+      this.lastLook ||= new THREE.Vector2();
+      this.lastLook.set(local.yaw, local.pitch);
+      this.spawnId = local.spawnId;
       this.camera.position.set(
         local.x,
         local.y +
@@ -505,7 +684,8 @@ export class Renderer {
           (local.hp > 0
             ? Math.sin(t * 11) *
               Math.min(0.022, Math.hypot(local.vx, local.vz) * 0.004)
-            : -0.5),
+            : -0.5) -
+          this.landing,
         local.z,
       );
       this.camera.rotation.set(
@@ -520,45 +700,78 @@ export class Renderer {
           : this.options.fov || 78;
       this.camera.fov += (fov - this.camera.fov) * Math.min(1, dt * 14);
       this.camera.updateProjectionMatrix();
-      this.setWeapon(local.weapon);
-      const bob =
+      const throwing = this.throwUntil > t,
+        visualWeapon = throwing ? this.throwWeapon : local.weapon,
+        pose = weaponPose(visualWeapon),
+        motion = reloadPose(visualWeapon, throwing ? 0 : local.reload),
+        bob =
           Math.sin(t * 9) *
           Math.min(0.012, Math.hypot(local.vx, local.vz) * 0.002),
-        reload =
-          local.reload > 0
-            ? Math.sin(
-                Math.min(1, local.reload / WEAPONS[local.weapon].reload) *
-                  Math.PI,
-              )
-            : 0;
-      this.gun.scale.setScalar(0.83);
+        throwPhase = throwing
+          ? smooth(1 - (this.throwUntil - t) / GRENADE_THROW_SECONDS)
+          : 0;
+      this.setWeapon(visualWeapon, local.team);
+      this.aimBlend +=
+        ((aim && !pose.equipment ? 1 : 0) - this.aimBlend) *
+        (1 - Math.exp(-18 * dt));
+      const ads = this.aimBlend;
+      this.gun.scale.setScalar(pose.scale);
       this.gun.position.set(
-        aim ? 0.008 : 0.25,
-        aim
-          ? -0.12
-          : -0.28 + bob - reload * 0.14 - this.gun.userData.draw * 0.21,
-        -0.83 + this.kick * 0.05,
+        THREE.MathUtils.lerp(pose.position[0], 0, ads) -
+          this.sway.x * (1 - ads * 0.7),
+        THREE.MathUtils.lerp(pose.position[1], -pose.sight * pose.scale, ads) +
+          bob * (1 - ads * 0.8) -
+          motion.tilt * 0.09 -
+          this.gun.userData.draw * 0.22 -
+          this.sway.y -
+          this.landing +
+          Math.sin(throwPhase * Math.PI) * 0.13,
+        pose.position[2] +
+          this.kick * 0.075 * pose.kick +
+          motion.seat * -0.012 -
+          throwPhase * 0.42,
       );
       this.gun.rotation.set(
-        this.kick * 0.1 - reload * 0.45 + this.gun.userData.draw * 0.35,
+        this.kick * 0.1 * pose.kick -
+          motion.tilt * 0.23 +
+          this.gun.userData.draw * 0.32 +
+          throwPhase * 0.8,
         local.action === "slash"
           ? Math.sin((local.actionTime / 0.32) * Math.PI) * -0.9
-          : 0,
-        reload * 0.55,
+          : this.sway.x * 0.6 + (pose.equipment ? 0 : pose.yaw * (1 - ads)),
+        motion.tilt * 0.34 + this.kick * 0.015 + bob * 0.5,
       );
       this.gun.visible =
         local.hp > 0 && !(aim && WEAPONS[local.weapon].type === "SNIPER");
       this.gun.userData.flash.visible =
-        this.flashUntil > t && local.weapon !== "knife";
+        this.flashUntil > t && !pose.equipment && local.weapon !== "knife";
+      this.muzzleLight.intensity = this.gun.userData.flash.visible
+        ? WEAPONS[visualWeapon].suppressed
+          ? 0.1
+          : 0.7
+        : 0;
+      if (this.muzzleLight.intensity && this.gun.userData.muzzle)
+        this.gun.userData.muzzle.getWorldPosition(this.muzzleLight.position);
       animateGun(
         this.gun,
-        local.weapon,
-        local.reload,
+        visualWeapon,
+        throwing ? 0 : local.reload,
         this.kick,
         dt,
-        local.action,
-        local.actionTime,
+        throwing ? "throw" : local.action === "throw" ? "idle" : local.action,
+        throwing ? this.throwUntil - t : local.actionTime,
       );
+      if (this.holster) {
+        const left = this.holsterUntil - t;
+        if (left <= 0 || throwing || aim) {
+          this.holster.removeFromParent();
+          disposeModel(this.holster);
+          this.holster = null;
+        } else {
+          this.holster.position.y -= dt * 3.2;
+          this.holster.rotation.x += dt * 2;
+        }
+      }
     } else this.menuCamera();
     for (const m of this.players.values()) {
       const u = m.userData,
@@ -573,7 +786,15 @@ export class Renderer {
       let diff = p.yaw - m.rotation.y;
       diff = Math.atan2(Math.sin(diff), Math.cos(diff));
       m.rotation.y += diff * Math.min(1, dt * 20);
-      animatePlayer(m, p, t, dt);
+      const action = this.remoteWeaponAction(p);
+      this.setRemoteWeapon(m, action?.weapon || p.weapon);
+      const poseState =
+        action?.kind === "throw"
+          ? { ...p, action: "throw", actionTime: action.until - t, reload: 0 }
+          : p.action === "throw"
+            ? { ...p, action: "idle" }
+            : p;
+      animatePlayer(m, poseState, t, dt);
       // Distant opponents retain their silhouette; only their costly tiny gear is culled.
       const distance = m.position.distanceTo(this.camera.position);
       for (const part of u.lodMeshes)
@@ -583,6 +804,16 @@ export class Renderer {
             : part.userData.highGeometry;
       u.gun.visible = distance < this.settings.detail;
       u.label.visible = p.hp > 0 && distance < 35;
+    }
+    for (const m of this.grenades.values()) {
+      const u = m.userData;
+      m.position.lerpVectors(
+        u.previous,
+        u.target,
+        Math.min(1, (t - u.received) / 0.05),
+      );
+      m.rotation.x += dt * 6 * u.spin;
+      m.rotation.z += dt * 3 * u.spin;
     }
     for (const detail of this.world.details.children) {
       const d = detail.position.distanceTo(this.camera.position);
@@ -616,7 +847,8 @@ export class Renderer {
           e.mesh.material.opacity = e.decal
             ? Math.min(1, e.life / 2)
             : ((e.opacity ?? 1) * e.life) / e.max;
-        if (e.mesh.isPointLight) e.mesh.intensity = (45 * e.life) / e.max;
+        if (e.mesh.isPointLight)
+          e.mesh.intensity = ((e.lightIntensity || 45) * e.life) / e.max;
       }
     }
     this.smokeOpacity = 0;

@@ -5,6 +5,7 @@ export class Sound {
     this.ctx = null;
     this.playing = false;
     this.active = 0;
+    this.reloadSounds = new Set();
   }
   async unlock() {
     if (!this.ctx) {
@@ -62,6 +63,15 @@ export class Sound {
   setPlaying(value) {
     this.playing = value;
     this.apply();
+    if (!value) this.cancelReload();
+  }
+  cancelReload() {
+    for (const source of this.reloadSounds) {
+      try {
+        source.stop();
+      } catch {}
+    }
+    this.reloadSounds.clear();
   }
   play(type, { volume = 1, pan = 0, weapon = "m4a4", surface = "stone" } = {}) {
     const c = this.ctx;
@@ -72,13 +82,45 @@ export class Sound {
       boom = type === "explosion" || type === "bombExplosion",
       step = type === "step";
     if (type === "reload") {
-      for (const f of [0.16, 0.64, 0.87])
-        this.clickAt(
+      this.cancelReload();
+      const config = WEAPONS[weapon],
+        tube = ["nova", "xm1014", "sawedoff"].includes(weapon);
+      for (const f of tube ? [0.2, 0.4, 0.6, 0.82] : [0.14, 0.65, 0.87]) {
+        const source = this.clickAt(
           t + (WEAPONS[weapon]?.reload || 2) * f,
-          f > 0.8 ? 2300 : 850,
-          volume * 0.32,
+          f > 0.8
+            ? config?.type === "PISTOL"
+              ? 2750
+              : 1800
+            : weapon === "p90"
+              ? 1200
+              : 670,
+          volume * (f > 0.8 ? 0.27 : 0.18),
           pan,
         );
+        if (source) this.reloadSounds.add(source);
+      }
+      return;
+    }
+    if (
+      [
+        "draw",
+        "pickup",
+        "drop",
+        "throw",
+        "bombPlant",
+        "bombPickup",
+        "bombDrop",
+      ].includes(type)
+    ) {
+      const metallic = type === "throw" ? 2700 : type === "drop" ? 540 : 1300;
+      this.clickAt(t, metallic, volume * 0.12, pan, 0.035);
+      this.clickAt(t + 0.065, metallic * 0.58, volume * 0.08, pan, 0.065);
+      return;
+    }
+    if (type === "grenadeBounce") {
+      this.clickAt(t, 1350, volume * 0.16, pan, 0.033);
+      this.clickAt(t + 0.015, 490, volume * 0.1, pan, 0.06);
       return;
     }
     if (
@@ -114,11 +156,13 @@ export class Sound {
             : 0.16
         : type === "flashbang"
           ? 0.32
-          : step
-            ? surface === "water"
-              ? 0.19
-              : 0.07
-            : 0.07;
+          : type === "smoke"
+            ? 1.25
+            : step
+              ? surface === "water"
+                ? 0.19
+                : 0.07
+              : 0.07;
     const frequency = boom
       ? 140
       : shot
@@ -154,11 +198,19 @@ export class Sound {
     const source = c.createBufferSource();
     source.buffer = this.noise;
     const filter = c.createBiquadFilter();
-    filter.type = step || boom ? "lowpass" : "bandpass";
+    filter.type =
+      type === "smoke" ? "highpass" : step || boom ? "lowpass" : "bandpass";
     filter.frequency.value = frequency;
-    filter.Q.value = 0.7;
+    filter.Q.value = shot
+      ? w.type === "SMG"
+        ? 0.95
+        : w.type === "SHOTGUN"
+          ? 0.38
+          : 0.65
+      : 0.7;
     source.connect(filter).connect(gain);
-    source.start();
+    source.playbackRate.value = 0.96 + Math.random() * 0.08;
+    source.start(t, Math.random() * 0.2);
     source.stop(t + duration);
     this.active++;
     if (shot || boom) {
@@ -172,11 +224,30 @@ export class Sound {
       osc.onended = () => osc.disconnect();
     }
     if (shot && !w.suppressed) {
-      this.clickAt(t, 3000, volume * 0.21, pan, 0.018);
-      this.clickAt(t + 0.085, 850, volume * 0.045, pan, 0.1);
-      this.clickAt(t + 0.155, 700, volume * 0.022, pan, 0.1);
+      const heavy = ["SHOTGUN", "SNIPER", "HEAVY"].includes(w.type);
+      this.clickAt(
+        t,
+        heavy ? 2450 : 3300,
+        volume * 0.18,
+        pan,
+        heavy ? 0.03 : 0.014,
+      );
+      this.clickAt(
+        t + 0.045,
+        w.type === "PISTOL" ? 2850 : 1800,
+        volume * 0.045,
+        pan,
+        0.025,
+      );
+      this.clickAt(t + 0.09, 850, volume * (heavy ? 0.07 : 0.035), pan, 0.12);
+      this.clickAt(t + 0.175, 620, volume * 0.022, -pan * 0.35, 0.15);
+    } else if (shot) {
+      this.clickAt(t + 0.025, 2200, volume * 0.055, pan, 0.025);
     }
+    if (type === "flashbang")
+      this.clickAt(t + 0.02, 3400, volume * 0.04, pan, 0.24, true);
     source.onended = () => {
+      this.reloadSounds.delete(source);
       source.disconnect();
       filter.disconnect();
       gain.disconnect();
@@ -205,11 +276,13 @@ export class Sound {
     source.stop(t + duration);
     this.active++;
     source.onended = () => {
+      this.reloadSounds.delete(source);
       source.disconnect();
       filter.disconnect();
       gain.disconnect();
       stereo.disconnect();
       this.active--;
     };
+    return source;
   }
 }

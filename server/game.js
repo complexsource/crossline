@@ -1,5 +1,13 @@
 import { randomBytes } from "node:crypto";
-import { getMap, validMap, groundAt, spawnHeight } from "../shared/maps.js";
+import { blastDamage } from "./explosions.js";
+import { beginAction, fireBarrier } from "./actions.js";
+import {
+  actionBlocksFire,
+  actionState,
+  GRENADE_THROW_SECONDS,
+} from "../shared/actions.js";
+import { chooseSpawn } from "./spawns.js";
+import { getMap, validMap, groundAt } from "../shared/maps.js";
 import {
   WEAPONS,
   PRIMARIES,
@@ -301,26 +309,13 @@ export class Game {
     this.broadcast(r);
   }
   spawn(r, p) {
-    const living = [...r.players.values()].filter((e) => e !== p && e.hp > 0),
-      spots = getMap(r.mapId)
-        .spawns[p.team].map((s) => ({
-          ...s,
-          rank:
-            Math.min(
-              100,
-              ...living.map(
-                (e) =>
-                  Math.hypot(e.x - s.x, e.z - s.z) *
-                  (e.team === p.team ? 2 : 1),
-              ),
-            ) +
-            this.random() * 5,
-        }))
-        .sort((a, b) => b.rank - a.rank);
+    const spot = chooseSpawn(r, p, this.now(), this.random, (a, b) =>
+      this.visible(a, b, r),
+    );
     Object.assign(p, {
-      x: spots[0].x,
-      z: spots[0].z,
-      y: spawnHeight(spots[0].x, spots[0].z),
+      x: spot.x,
+      z: spot.z,
+      y: spot.y,
       vx: 0,
       vy: 0,
       vz: 0,
@@ -332,6 +327,7 @@ export class Game {
       crouch: false,
       jumpHeld: false,
       nextFire: 0,
+      shotCooldownUntil: 0,
       nextUse: 0,
       respawnAt: 0,
       protectedUntil: this.now() + 1.5,
@@ -368,6 +364,7 @@ export class Game {
       if (typeof input[k] === "boolean") input[k] = data[k] === true;
     input.yaw = data.yaw % (Math.PI * 2);
     input.pitch = clamp(data.pitch, -1.48, 1.48);
+    input.shoot &&= data.fireEpoch === p.fireEpoch && data.weapon === p.weapon;
     p.input = input;
     p.receivedSeq = data.seq;
     p.lastInput = this.now();
@@ -377,19 +374,32 @@ export class Game {
       r = this.roomOf(id),
       now = this.now();
     if (!p || r.state !== "playing" || p.hp <= 0) return false;
-    if (
-      type === "fire" &&
-      value &&
-      value.spawnId === p.spawnId &&
-      Number.isFinite(value.yaw) &&
-      Number.isFinite(value.pitch)
-    )
+    if (type === "fire") {
+      if (
+        !value ||
+        value.spawnId !== p.spawnId ||
+        value.fireEpoch !== p.fireEpoch ||
+        value.weapon !== p.weapon ||
+        !Number.isSafeInteger(value.pressId) ||
+        value.pressId <= (p.lastPressId || 0) ||
+        !Number.isFinite(value.yaw) ||
+        !Number.isFinite(value.pitch)
+      )
+        return false;
+      p.lastPressId = value.pressId;
+      if (actionBlocksFire(p, now) || now < p.nextFire) return false;
+      p.fireArmed = true;
       p.pendingShot = {
         yaw: value.yaw % (Math.PI * 2),
         pitch: clamp(value.pitch, -1.48, 1.48),
         aim: value.aim === true,
         time: now,
+        weapon: p.weapon,
+        fireEpoch: p.fireEpoch,
       };
+      return true;
+    }
+    if (p.action === "throw" && now < p.actionUntil) return false;
     if (type === "switch") {
       let target = value;
       if (value === "primary" || value === "secondary") target = p.slots[value];
@@ -429,15 +439,19 @@ export class Game {
         );
       const item = nearestPickup(r, p, canSee);
       if (item && pickup(r, p, item.id, now, canSee))
-        this.emit(id, "fx", { type: "pickup", weapon: item.weapon });
+        this.emit(id, "fx", { type: "pickup", id, weapon: item.weapon });
     }
     if (type === "reload" && isFirearm(p.weapon)) {
       const w = WEAPONS[p.weapon],
         a = p.ammo[p.weapon];
-      if (!p.reloadAt && a.mag < w.mag && a.reserve > 0) {
+      if (
+        !actionBlocksFire(p, now) &&
+        !p.reloadAt &&
+        a.mag < w.mag &&
+        a.reserve > 0
+      ) {
         p.reloadAt = now + w.reload;
-        p.action = "reload";
-        p.actionUntil = p.reloadAt;
+        beginAction(p, "reload", now, w.reload);
         this.emit(r.code, "fx", { type: "reload", id, weapon: p.weapon });
       }
     }
@@ -462,7 +476,8 @@ export class Game {
       !GRENADES.includes(kind) ||
       !p.grenades[kind] ||
       now < p.nextUse ||
-      now < p.nextFire
+      now < p.nextFire ||
+      actionBlocksFire(p, now)
     )
       return;
     p.grenades[kind]--;
@@ -483,32 +498,37 @@ export class Game {
       vz: d.z * 13,
       explodeAt: now + (kind === "he" ? 2 : kind === "flash" ? 1.7 : 2.3),
     });
-    p.action = "throw";
-    p.actionUntil = now + 0.55;
+    beginAction(p, "throw", now, GRENADE_THROW_SECONDS);
     this.emit(r.code, "fx", { type: "throw", id: p.id, weapon: kind });
-    equip(p, p.slots.primary || p.slots.secondary || "knife", now);
-    p.action = "throw";
-    p.actionUntil = now + 0.55;
   }
   damage(r, target, amount, shooter, weapon, headshot = false) {
     if (
+      !Number.isFinite(amount) ||
+      amount <= 0 ||
       target.hp <= 0 ||
       target.protectedUntil > this.now() ||
       (target.team === shooter.team && target.id !== shooter.id)
     )
       return;
     const taken = Math.min(target.hp, Math.round(amount));
+    if (!taken) return;
     target.hp -= taken;
     if (target.id !== shooter.id)
       shooter.damage = (shooter.damage || 0) + taken;
     this.emit(target.id, "hurt", { hp: target.hp, headshot });
     if (target.id !== shooter.id)
-      this.emit(shooter.id, "hit", { headshot, killed: target.hp === 0 });
+      this.emit(shooter.id, "hit", {
+        headshot,
+        killed: target.hp === 0,
+        weapon,
+      });
     if (!target.hp) {
       target.deaths++;
       target.respawnAt = this.now() + 3;
       target.reloadAt = 0;
       target.input = emptyInput();
+      fireBarrier(target);
+      target.returnWeapon = null;
       target.action = "death";
       target.actionUntil = target.respawnAt;
       drop(r, target, this.now(), { death: true });
@@ -529,8 +549,9 @@ export class Game {
     }
   }
   fire(r, p) {
+    if (actionBlocksFire(p, this.now())) return;
     if (GRENADES.includes(p.weapon)) {
-      if (!p.wasShooting) this.throwGrenade(r, p);
+      this.throwGrenade(r, p);
       return;
     }
     const now = this.now(),
@@ -543,6 +564,7 @@ export class Game {
       return;
     }
     p.nextFire = now + w.interval;
+    p.shotCooldownUntil = p.nextFire;
     p.protectedUntil = 0;
     if (p.weapon !== "knife") ammo.mag--;
     p.action = p.weapon === "knife" ? "slash" : "shoot";
@@ -658,12 +680,21 @@ export class Game {
       return;
     }
     for (const p of r.players.values()) {
+      if (p.hp <= 0) continue;
+      if (g.kind === "he") {
+        this.damage(
+          r,
+          p,
+          blastDamage(g, p, (a, b) => this.visible(a, b, r)),
+          owner,
+          "he",
+        );
+        continue;
+      }
       const eye = { x: p.x, y: p.y + eyeHeight(p), z: p.z },
         delta = { x: g.x - eye.x, y: g.y - eye.y, z: g.z - eye.z },
         distance = Math.hypot(delta.x, delta.y, delta.z);
       if (p.hp <= 0 || !this.visible(g, eye, r)) continue;
-      if (g.kind === "he" && distance < 8)
-        this.damage(r, p, 125 * (1 - distance / 8), owner, "he");
       if (g.kind === "flash" && distance < 20) {
         const look = direction(p.yaw, p.pitch),
           facing =
@@ -708,6 +739,14 @@ export class Game {
           p.input = { ...emptyInput(), yaw: p.yaw, pitch: p.pitch };
         move(p, p.input, TICK, getMap(r.mapId).boxes);
         p.ack = p.receivedSeq;
+        if (p.action === "throw" && now >= p.actionUntil) {
+          const target = owned(p).includes(p.returnWeapon)
+            ? p.returnWeapon
+            : p.slots.primary || p.slots.secondary || "knife";
+          equip(p, target, now);
+          p.returnWeapon = null;
+          this.emit(r.code, "fx", { type: "draw", id: p.id, weapon: target });
+        }
         if (p.reloadAt && now >= p.reloadAt) {
           const a = p.ammo[p.weapon];
           if (a) {
@@ -716,10 +755,17 @@ export class Game {
             a.reserve -= n;
           }
           p.reloadAt = 0;
+          fireBarrier(p);
+          p.action = "idle";
         }
         const press = p.pendingShot;
         p.pendingShot = null;
-        if (press && now - press.time < 0.2) {
+        if (
+          press &&
+          now - press.time < 0.2 &&
+          press.weapon === p.weapon &&
+          press.fireEpoch === p.fireEpoch
+        ) {
           const { yaw, pitch } = p,
             aim = p.input.aim;
           p.yaw = press.yaw;
@@ -729,12 +775,13 @@ export class Game {
           p.yaw = yaw;
           p.pitch = pitch;
           p.input.aim = aim;
-        } else if (p.input.shoot && (WEAPONS[p.weapon].auto || !p.wasShooting))
+        } else if (p.fireArmed && p.input.shoot && WEAPONS[p.weapon].auto)
           this.fire(r, p);
         p.wasShooting = p.input.shoot;
       }
       for (const g of r.grenades) {
         g.vy -= 16 * TICK;
+        let impact = 0;
         for (const a of ["x", "y", "z"]) {
           const old = g[a];
           g[a] += g["v" + a] * TICK;
@@ -747,15 +794,30 @@ export class Game {
             )
           ) {
             g[a] = old;
+            impact = Math.max(impact, Math.abs(g["v" + a]));
+            if (a === "y" && g.vy < 0) {
+              g.vx *= 0.84;
+              g.vz *= 0.84;
+            }
             g["v" + a] *= -0.5;
           }
         }
         const floor = groundAt(g.x, g.z) + 0.12;
         if (g.y < floor) {
           g.y = floor;
+          impact = Math.max(impact, Math.abs(g.vy));
           g.vy = Math.abs(g.vy) * 0.35;
           g.vx *= 0.94;
           g.vz *= 0.94;
+        }
+        if (impact > 1.6 && now > (g.bounceAt || 0)) {
+          this.emit(r.code, "fx", {
+            type: "grenadeBounce",
+            x: g.x,
+            y: g.y,
+            z: g.z,
+          });
+          g.bounceAt = now + 0.12;
         }
         if (now >= g.explodeAt) this.detonate(r, g);
       }
@@ -835,6 +897,8 @@ export class Game {
         ping: p.ping,
         ack: p.ack,
         spawnId: p.spawnId,
+        fireEpoch: p.fireEpoch,
+        actionState: actionState(p, now),
         action: now < p.actionUntil ? p.action : "idle",
         actionTime: Math.max(0, p.actionUntil - now),
       })),
