@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+  <body>
+    <p>Crossline original asset compiler</p>
+    <script type="module">
+      import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
+      import { weaponModel } from "../src/weapon-models.js";
+      import { materialsReady } from "../src/materials.js";
+      import { bake } from "../src/geometry.js";
+      await materialsReady;
+      function collapseStaticGroups(group) {
+        for (const child of [...group.children]) {
+          collapseStaticGroups(child);
+          if (!child.isGroup || child.name) continue;
+          child.updateMatrix();
+          for (const part of [...child.children]) {
+            part.applyMatrix4(child.matrix);
+            group.add(part);
+          }
+          group.remove(child);
+        }
+      }
+      window.compileAsset = async (id) => {
+        if (["soldier", "terrorist"].includes(id))
+          throw new Error("Use tools/build-characters.js for the approved skinned characters.");
+        const model = weaponModel(id);
+        // Flatten decorative pouch/strap/hand groups, but retain named rig and weapon pivots.
+        // This makes added art detail cheaper without flattening any animation hierarchy.
+        collapseStaticGroups(model);
+        bake(model);
+        // Runtime handles are not GLTF extras. Named joints survive in the exported asset.
+        model.traverse((o) => {
+          o.userData = {};
+        });
+        const data = await new GLTFExporter().parseAsync(model, {
+          binary: true,
+          onlyVisible: true,
+          animations: [],
+        });
+        const bytes = new Uint8Array(data);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i += 8192)
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        return btoa(binary);
+      };
+      window.ready = true;
+    </script>
+  </body>
+</html>

@@ -1,0 +1,29 @@
+{
+  "jointOrder": [
+    "body",
+    "head",
+    "arm0",
+    "elbow0",
+    "wrist0",
+    "arm1",
+    "elbow1",
+    "wrist1",
+    "leg0",
+    "knee0",
+    "ankle0",
+    "leg1",
+    "knee1",
+    "ankle1",
+    "finger0_0",
+    "finger0_1",
+    "finger0_2",
+    "finger0_3",
+    "finger1_0",
+    "finger1_1",
+    "finger1_2",
+    "finger1_3"
+  ],
+  "triangles": 96901,
+  "vertices": 49898,
+  "source": "Blender baked approved character; not a production skin until tools/build-characters.js runs"
+}

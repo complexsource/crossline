@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#103d3e" />
+    <link rel="icon" href="data:," />
+    <title>Soldier Proportion Study · Crossline</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        color: #eaf2e9;
+        background: #103d3e;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      #stage {
+        display: block;
+        width: 100%;
+        height: 100dvh;
+        touch-action: none;
+      }
+      .heading {
+        position: absolute;
+        top: 34px;
+        left: 40px;
+        pointer-events: none;
+      }
+      .brand {
+        margin: 0 0 22px;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.3em;
+      }
+      .edition {
+        display: inline-flex;
+        padding: 8px 12px;
+        border: 1px solid #a8c7bb3d;
+        border-radius: 4px;
+        background: #082d2e65;
+        font-size: 10px;
+        letter-spacing: 0.15em;
+        font-weight: 700;
+      }
+      h1 {
+        margin: 15px 0 9px;
+        font-size: clamp(28px, 3.3vw, 48px);
+        font-weight: 650;
+        letter-spacing: -0.035em;
+      }
+      .subtitle {
+        max-width: 280px;
+        margin: 0;
+        color: #b0c6bb;
+        line-height: 1.65;
+        font-size: 13px;
+      }
+      .footer {
+        position: absolute;
+        left: 40px;
+        right: 40px;
+        bottom: 30px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 20px;
+        pointer-events: none;
+      }
+      .notice {
+        margin: 0;
+        color: #c6d7ca;
+        font-size: 12px;
+        line-height: 1.7;
+      }
+      .notice small {
+        display: block;
+        margin-top: 5px;
+        color: #8eada2;
+        font-size: 11px;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 6px;
+        border: 1px solid #bdd2c42b;
+        border-radius: 10px;
+        background: #092f30cf;
+        backdrop-filter: blur(12px);
+        pointer-events: auto;
+      }
+      button {
+        border: 1px solid transparent;
+        border-radius: 6px;
+        padding: 11px 16px;
+        background: transparent;
+        color: #bdd0c5;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          color 0.15s;
+      }
+      button:hover {
+        background: #c3d7bd15;
+        color: #fff;
+      }
+      button[aria-pressed="true"] {
+        background: #d9dfbb;
+        color: #213a35;
+      }
+      button:focus-visible {
+        outline: 2px solid #f6e1a5;
+        outline-offset: 3px;
+      }
+      button:disabled {
+        cursor: wait;
+        opacity: 0.45;
+      }
+      #status {
+        position: absolute;
+        top: 34px;
+        right: 40px;
+        max-width: min(330px, 80vw);
+        border-radius: 8px;
+        padding: 11px 15px;
+        background: #082b2bd9;
+        color: #bfd1c5;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      #status[data-state="ready"] {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #status[data-state="error"] {
+        color: #ffe1d5;
+        border: 1px solid #d68c7255;
+      }
+      @media (max-width: 720px) {
+        .heading {
+          top: 22px;
+          left: 22px;
+        }
+        .brand {
+          margin-bottom: 16px;
+        }
+        .subtitle {
+          max-width: 230px;
+          font-size: 12px;
+        }
+        #status {
+          top: auto;
+          bottom: 136px;
+          left: 22px;
+          right: 22px;
+        }
+        .footer {
+          left: 22px;
+          right: 22px;
+          bottom: 20px;
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .notice {
+          font-size: 10px;
+        }
+        .notice small {
+          display: none;
+        }
+        nav {
+          gap: 2px;
+          padding: 4px;
+        }
+        button {
+          padding: 10px 12px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        button {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas
+      id="stage"
+      aria-label="Interactive three-dimensional Soldier proportion study. Drag to orbit and scroll to zoom."
+    ></canvas>
+    <header class="heading">
+      <p class="brand">CROSSLINE</p>
+      <span class="edition">SOLDIER / PROPORTION STUDY</span>
+      <h1>A new character.</h1>
+      <p class="subtitle">
+        Review the silhouette, expression and equipment from every angle.
+      </p>
+    </header>
+    <div id="status" role="status" aria-live="polite">
+      Loading the actual 3D study…
+    </div>
+    <footer class="footer">
+      <p class="notice">
+        Unrigged preview · not installed in multiplayer<small
+          >Drag to orbit · scroll to zoom · right-drag to pan</small
+        >
+      </p>
+      <nav aria-label="Character camera views">
+        <button data-view="front" aria-pressed="false" disabled>Front</button>
+        <button data-view="three-quarter" aria-pressed="true" disabled>
+          Three-quarter
+        </button>
+        <button data-view="face" aria-pressed="false" disabled>Face</button>
+        <button data-view="reset" aria-pressed="false" disabled>Reset</button>
+      </nav>
+    </footer>
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+      window.ready = false;
+      window.studyError = null;
+      window.modelStats = null;
+      const status = document.querySelector("#status");
+      const canvas = document.querySelector("#stage");
+      let renderer, controls, scene, camera, model, bounds, height, frame;
+      let currentView = "three-quarter";
+
+      function fail(error) {
+        window.studyError = error?.message || String(error);
+        window.ready = false;
+        status.dataset.state = "error";
+        status.setAttribute("role", "alert");
+        status.textContent =
+          "The 3D study could not be loaded. " + window.studyError;
+        document.querySelectorAll("[data-view]").forEach((button) => {
+          button.disabled = true;
+        });
+      }
+
+      function draw() {
+        controls.update();
+        renderer.render(scene, camera);
+      }
+
+      window.view = (name) => {
+        if (!model) throw new Error("The study is not loaded.");
+        if (!["front", "three-quarter", "face", "reset"].includes(name))
+          throw new Error("Unknown study view: " + name);
+        const view = name === "reset" ? "three-quarter" : name;
+        currentView = view;
+        const center = bounds.getCenter(new THREE.Vector3());
+        const portrait = camera.aspect < 0.85;
+        const distance = height * (portrait ? 3.2 : 2.05);
+        camera.fov = view === "face" ? 32 : 34;
+        if (view === "face") {
+          controls.target.set(center.x, bounds.min.y + height * 0.81, center.z);
+          camera.position
+            .copy(controls.target)
+            .add(
+              new THREE.Vector3(
+                height * -0.12,
+                height * 0.16,
+                height * (portrait ? 1.05 : 0.82),
+              ),
+            );
+        } else {
+          controls.target.set(
+            center.x,
+            bounds.min.y + height * (portrait ? 0.51 : 0.52),
+            center.z,
+          );
+          camera.position
+            .copy(controls.target)
+            .add(
+              view === "front"
+                ? new THREE.Vector3(0, height * 0.15, distance)
+                : new THREE.Vector3(
+                    distance * -0.42,
+                    height * 0.4,
+                    distance * 0.91,
+                  ),
+            );
+        }
+        camera.updateProjectionMatrix();
+        controls.update();
+        document
+          .querySelectorAll("[data-view]")
+          .forEach((button) =>
+            button.setAttribute(
+              "aria-pressed",
+              String(button.dataset.view === view),
+            ),
+          );
+        draw();
+        return {
+          view,
+          position: camera.position.toArray(),
+          target: controls.target.toArray(),
+        };
+      };
+
+      async function start() {
+        renderer = new THREE.WebGLRenderer({
+          canvas,
+          antialias: true,
+          alpha: false,
+          powerPreference: "high-performance",
+        });
+        renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+        renderer.setSize(innerWidth, innerHeight, false);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.1;
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x184d4b);
+        scene.fog = new THREE.FogExp2(0x184d4b, 0.026);
+        camera = new THREE.PerspectiveCamera(
+          34,
+          innerWidth / innerHeight,
+          0.02,
+          100,
+        );
+        controls = new OrbitControls(camera, canvas);
+        controls.addEventListener("start", () => {
+          currentView = null;
+          document
+            .querySelectorAll("[data-view]")
+            .forEach((button) => button.setAttribute("aria-pressed", "false"));
+        });
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.12;
+        controls.maxPolarAngle = Math.PI * 0.52;
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        const room = new RoomEnvironment();
+        const environment = pmrem.fromScene(room, 0.04);
+        scene.environment = environment.texture;
+        scene.environmentIntensity = 0.45;
+        room.dispose();
+        pmrem.dispose();
+        scene.add(new THREE.HemisphereLight(0xe3f0e4, 0x344f45, 1.2));
+        const key = new THREE.DirectionalLight(0xffe6c5, 3.3);
+        key.position.set(-3.5, 6.5, 5);
+        key.castShadow = true;
+        key.shadow.mapSize.set(2048, 2048);
+        Object.assign(key.shadow.camera, {
+          left: -3.5,
+          right: 3.5,
+          top: 4,
+          bottom: -3.5,
+          near: 0.2,
+          far: 18,
+        });
+        key.shadow.normalBias = 0.008;
+        key.shadow.bias = -0.00015;
+        key.shadow.radius = 3;
+        scene.add(key);
+        const fill = new THREE.DirectionalLight(0xc0e2e7, 0.65);
+        fill.position.set(4, 3, 5);
+        scene.add(fill);
+        const rim = new THREE.DirectionalLight(0xb7e3d5, 2.1);
+        rim.position.set(2, 5, -3);
+        scene.add(rim);
+        const floor = new THREE.Mesh(
+          new THREE.PlaneGeometry(200, 200),
+          new THREE.MeshStandardMaterial({
+            color: 0x245954,
+            roughness: 0.91,
+            metalness: 0,
+          }),
+        );
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+        const gltf = await new GLTFLoader().loadAsync(
+          "/art/character-study/soldier-study.glb",
+          (progress) => {
+            status.textContent = progress.total
+              ? `Loading the actual 3D study… ${Math.round((progress.loaded / progress.total) * 100)}%`
+              : "Loading the actual 3D study…";
+          },
+        );
+        model = gltf.scene;
+        model.updateMatrixWorld(true);
+        bounds = new THREE.Box3().setFromObject(model, true);
+        height = bounds.max.y - bounds.min.y;
+        if (
+          !(height > 0) ||
+          ![...bounds.min, ...bounds.max].every(Number.isFinite)
+        )
+          throw new Error("The model has invalid dimensions.");
+        let meshes = 0,
+          triangles = 0,
+          vertices = 0,
+          skinnedMeshes = 0,
+          finite = true;
+        const materials = new Set(),
+          geometries = new Set();
+        model.traverse((node) => {
+          finite &&= node.matrixWorld.elements.every(Number.isFinite);
+          if (!node.isMesh) return;
+          meshes++;
+          if (node.isSkinnedMesh) skinnedMeshes++;
+          node.castShadow = node.receiveShadow = true;
+          (Array.isArray(node.material)
+            ? node.material
+            : [node.material]
+          ).forEach((material) => materials.add(material));
+          const geometry = node.geometry,
+            position = geometry.getAttribute("position");
+          triangles += (geometry.index?.count || position.count) / 3;
+          if (!geometries.has(geometry)) {
+            geometries.add(geometry);
+            vertices += position.count;
+            for (let i = 0; i < position.count; i++) {
+              if (
+                ![position.getX(i), position.getY(i), position.getZ(i)].every(
+                  Number.isFinite,
+                )
+              ) {
+                finite = false;
+                break;
+              }
+            }
+          }
+        });
+        if (!finite || meshes === 0)
+          throw new Error("The model has no valid renderable geometry.");
+        window.modelStats = {
+          meshes,
+          triangles,
+          vertices,
+          materials: materials.size,
+          skinnedMeshes,
+          animations: gltf.animations.map((clip) => clip.name),
+          finite,
+          bounds: {
+            min: bounds.min.toArray(),
+            max: bounds.max.toArray(),
+            size: bounds.getSize(new THREE.Vector3()).toArray(),
+          },
+        };
+        floor.position.y = bounds.min.y - 0.005;
+        scene.add(model);
+        controls.minDistance = height * 0.28;
+        controls.maxDistance = height * 4;
+        window.view("three-quarter");
+        await renderer.compileAsync(scene, camera);
+        draw();
+        window.modelStats.render = { ...renderer.info.render };
+        window.ready = true;
+        status.dataset.state = "ready";
+        status.textContent = "3D study loaded.";
+        document.querySelectorAll("[data-view]").forEach((button) => {
+          button.disabled = false;
+        });
+        function animate() {
+          frame = requestAnimationFrame(animate);
+          draw();
+        }
+        animate();
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden) cancelAnimationFrame(frame);
+          else {
+            cancelAnimationFrame(frame);
+            animate();
+          }
+        });
+      }
+      document
+        .querySelectorAll("[data-view]")
+        .forEach((button) =>
+          button.addEventListener("click", () =>
+            window.view(button.dataset.view),
+          ),
+        );
+      addEventListener("resize", () => {
+        if (!renderer) return;
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight, false);
+        if (model) {
+          if (currentView) window.view(currentView);
+          else draw();
+        }
+      });
+      start().catch(fail);
+    </script>
+  </body>
+</html>

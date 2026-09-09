@@ -1,0 +1,981 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#123d3e" />
+    <link rel="icon" href="/favicon.svg" />
+    <title>Character Lab · Crossline</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        color: #edf2e6;
+        background: #103536;
+        font-synthesis: none;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      button,
+      select,
+      a {
+        -webkit-tap-highlight-color: transparent;
+      }
+      button,
+      select {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:disabled,
+      select:disabled {
+        cursor: wait;
+        opacity: 0.4;
+      }
+      button:focus-visible,
+      select:focus-visible,
+      a:focus-visible {
+        outline: 2px solid #f3dc9e;
+        outline-offset: 4px;
+      }
+      button,
+      a,
+      select {
+        transition:
+          background 0.18s,
+          color 0.18s,
+          border-color 0.18s,
+          transform 0.18s;
+      }
+      .app {
+        height: 100dvh;
+        min-height: 630px;
+        display: grid;
+        grid-template-columns: 292px minmax(0, 1fr);
+        grid-template-rows: 78px minmax(0, 1fr);
+      }
+      header {
+        grid-column: 1/-1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 34px;
+        border-bottom: 1px solid #bbd1bb20;
+        background: #0c3032;
+      }
+      .brand {
+        font-size: 16px;
+        font-weight: 850;
+        letter-spacing: 0.25em;
+        text-decoration: none;
+        color: #eef1db;
+      }
+      .brand span {
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        margin-left: 12px;
+        padding: 5px 7px;
+        border: 1px solid #d9dcaa45;
+        border-radius: 3px;
+        vertical-align: middle;
+        color: #d9dcaa;
+      }
+      .back {
+        font-size: 12px;
+        color: #bdcfc2;
+        text-decoration: none;
+        padding: 9px 0;
+      }
+      .back:hover {
+        color: #fff;
+      }
+      .back span {
+        margin-left: 12px;
+        color: #e0dcb2;
+      }
+      aside {
+        padding: 28px 25px 20px;
+        background: linear-gradient(165deg, #123c3d, #0d3133);
+        border-right: 1px solid #c8d9c91a;
+        overflow: auto;
+      }
+      .eyebrow {
+        margin: 0 0 8px;
+        color: #b4c8ba;
+        font-size: 9px;
+        letter-spacing: 0.19em;
+        font-weight: 750;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: 29px;
+        font-weight: 620;
+        letter-spacing: -0.04em;
+      }
+      .intro {
+        margin: 9px 0 23px;
+        color: #9cb8ae;
+        font-size: 12px;
+        line-height: 1.65;
+      }
+      .section {
+        margin-top: 22px;
+      }
+      .section-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 9px;
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #a1beb0;
+      }
+      .section-label small {
+        font-size: 9px;
+        color: #718f86;
+        letter-spacing: 0.04em;
+      }
+      .segmented {
+        display: flex;
+        padding: 4px;
+        border: 1px solid #bed0bb25;
+        border-radius: 7px;
+        background: #06282b70;
+        gap: 3px;
+      }
+      .segmented button {
+        flex: 1;
+        padding: 10px 5px;
+        border: 0;
+        border-radius: 4px;
+        background: none;
+        font-size: 11px;
+        font-weight: 650;
+        color: #afc5b8;
+      }
+      .segmented button:hover {
+        color: #fff;
+        background: #b8d0bd12;
+      }
+      .segmented button[aria-pressed="true"] {
+        background: #d6dcba;
+        color: #233c32;
+        box-shadow: 0 2px 8px #00171330;
+      }
+      .poses {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+      }
+      .poses button {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 35px;
+        padding: 8px 9px;
+        border: 1px solid #b4ccb41d;
+        border-radius: 5px;
+        text-align: left;
+        background: #123738;
+        color: #a7beb1;
+        font-size: 11px;
+      }
+      .poses button:hover {
+        border-color: #b5cbb350;
+        color: #fff;
+        background: #1b4542;
+      }
+      .poses button::before {
+        content: "";
+        width: 4px;
+        height: 4px;
+        background: #6d8c7c;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .poses button[aria-pressed="true"] {
+        color: #ecebd2;
+        background: #b6c49714;
+        border-color: #dce0ae66;
+      }
+      .poses button[aria-pressed="true"]::before {
+        background: #d9dda8;
+        box-shadow: 0 0 7px #d9dda840;
+      }
+      select {
+        width: 100%;
+        padding: 10px 11px;
+        border: 1px solid #bed0bb30;
+        border-radius: 5px;
+        background: #103435;
+        color: #d3dfcc;
+        font-size: 12px;
+      }
+      select:hover {
+        border-color: #c3d1af65;
+      }
+      .detail-note {
+        margin: 8px 0 0;
+        color: #789b8d;
+        font-size: 10px;
+        line-height: 1.6;
+      }
+      .transport {
+        display: flex;
+        gap: 7px;
+        margin-top: 18px;
+      }
+      .transport button {
+        flex: 1;
+        padding: 9px;
+        border: 1px solid #bed0bb30;
+        background: transparent;
+        color: #b5cbb9;
+        font-size: 11px;
+        border-radius: 5px;
+      }
+      .transport button:hover {
+        background: #b8d0bd10;
+        color: #fff;
+      }
+      .stage-wrap {
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        background: #19474a;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        touch-action: none;
+      }
+      .stage-heading {
+        position: absolute;
+        left: 27px;
+        top: 24px;
+        pointer-events: none;
+      }
+      .stage-heading h2 {
+        margin: 0;
+        color: #e4ead7;
+        font-size: 13px;
+        letter-spacing: 0.15em;
+        font-weight: 700;
+      }
+      .stage-heading p {
+        margin: 7px 0 0;
+        font-size: 10px;
+        color: #a5c0b2;
+        letter-spacing: 0.06em;
+      }
+      .asset-badge {
+        position: absolute;
+        right: 26px;
+        top: 24px;
+        border: 1px solid #c1d2b82c;
+        border-radius: 4px;
+        color: #b9cbb8;
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        padding: 7px 9px;
+        background: #0b30303d;
+        pointer-events: none;
+      }
+      .stage-footer {
+        position: absolute;
+        bottom: 24px;
+        left: 27px;
+        right: 27px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 18px;
+      }
+      .stage-help {
+        font-size: 10px;
+        line-height: 1.7;
+        color: #9bb9ac;
+        margin: 0;
+        pointer-events: none;
+      }
+      .stage-help span {
+        display: block;
+        color: #718f82;
+        font-size: 9px;
+      }
+      .views {
+        display: flex;
+        padding: 5px;
+        gap: 3px;
+        background: #082d30c9;
+        backdrop-filter: blur(14px);
+        border: 1px solid #b8cebb2d;
+        border-radius: 7px;
+      }
+      .views button {
+        border: 0;
+        border-radius: 4px;
+        color: #b1c8b8;
+        background: transparent;
+        padding: 10px 11px;
+        font-size: 10px;
+        white-space: nowrap;
+      }
+      .views button:hover {
+        background: #bed2b815;
+        color: #fff;
+      }
+      .views button[aria-pressed="true"] {
+        color: #273b32;
+        background: #d5dcb8;
+      }
+      #status {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        padding: 20px 25px;
+        background: #0b3032ed;
+        border: 1px solid #c7d1ac30;
+        border-radius: 10px;
+        font-size: 12px;
+        color: #d7e0cb;
+        box-shadow: 0 20px 70px #08252850;
+        text-align: center;
+        min-width: 230px;
+      }
+      #status[hidden] {
+        display: none;
+      }
+      #status[data-error="true"] {
+        color: #ffded1;
+        border-color: #d79b8040;
+      }
+      progress {
+        display: block;
+        appearance: none;
+        width: 190px;
+        height: 3px;
+        margin: 13px auto 0;
+        border: 0;
+        background: #33544a;
+      }
+      progress::-webkit-progress-bar {
+        background: #33544a;
+      }
+      progress::-webkit-progress-value {
+        background: #d5d7a7;
+      }
+      @media (max-width: 960px) {
+        .app {
+          grid-template-columns: 245px minmax(0, 1fr);
+        }
+        aside {
+          padding: 24px 19px;
+        }
+        .asset-badge {
+          display: none;
+        }
+        .stage-footer {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 9px;
+        }
+        .stage-help span {
+          display: none;
+        }
+        .views button {
+          padding: 9px 10px;
+        }
+      }
+      @media (max-width: 650px) {
+        .app {
+          height: auto;
+          min-height: 100dvh;
+          grid-template-columns: 1fr;
+          grid-template-rows: 65px minmax(460px, 65dvh) auto;
+        }
+        header {
+          padding: 0 21px;
+        }
+        .brand {
+          font-size: 14px;
+        }
+        .brand span {
+          font-size: 8px;
+          margin-left: 7px;
+        }
+        .stage-wrap {
+          grid-row: 2;
+          min-height: 460px;
+        }
+        aside {
+          grid-row: 3;
+          padding: 23px 21px 27px;
+          border-top: 1px solid #c8d9c922;
+          border-right: 0;
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 17px 19px;
+          overflow: visible;
+        }
+        .intro {
+          margin-bottom: 0;
+        }
+        .copy {
+          grid-column: 1/-1;
+        }
+        .section {
+          margin: 0;
+        }
+        .section.animation {
+          grid-column: 1/-1;
+        }
+        .poses {
+          grid-template-columns: repeat(5, 1fr);
+        }
+        .poses button {
+          font-size: 10px;
+          padding: 9px 6px;
+          justify-content: center;
+        }
+        .poses button::before {
+          display: none;
+        }
+        .transport {
+          grid-column: 1/-1;
+          margin-top: 0;
+        }
+        .stage-footer {
+          left: 20px;
+          right: 20px;
+          bottom: 18px;
+          align-items: center;
+        }
+        .stage-help {
+          display: none;
+        }
+        .stage-heading {
+          left: 21px;
+          top: 21px;
+        }
+      }
+      @media (max-width: 410px) {
+        .poses {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .poses button {
+          justify-content: flex-start;
+          padding: 9px;
+        }
+        .brand span {
+          display: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        button,
+        a,
+        select {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <a class="brand" href="/">CROSSLINE<span>VERSION 2</span></a
+        ><a class="back" href="/">Return to game <span>↗</span></a>
+      </header>
+      <aside aria-label="Character inspection controls">
+        <div class="copy">
+          <p class="eyebrow">Character inspection</p>
+          <h1>Built for the game.</h1>
+          <p class="intro">
+            Explore both characters, their equipment and the animations used in
+            multiplayer.
+          </p>
+        </div>
+        <section class="section">
+          <div class="section-label">Character</div>
+          <div class="segmented" aria-label="Character selection">
+            <button data-team="soldiers" aria-pressed="true" disabled>
+              Soldier</button
+            ><button data-team="terrorists" aria-pressed="false" disabled>
+              Terrorist
+            </button>
+          </div>
+        </section>
+        <section class="section animation">
+          <div class="section-label">
+            Animation <small>10 runtime states</small>
+          </div>
+          <div class="poses" aria-label="Animation selection"></div>
+        </section>
+        <section class="section">
+          <label class="section-label" for="weapon">Weapon</label
+          ><select id="weapon" disabled aria-label="Held weapon">
+            <option value="m4a4">M4A4 · rifle</option>
+            <option value="ak47">AK-47 · rifle</option>
+            <option value="glock18">Glock-18 · pistol</option>
+            <option value="nova">Nova · shotgun</option>
+            <option value="awp">AWP · sniper</option>
+            <option value="knife">Knife</option>
+            <option value="he">HE grenade</option>
+            <option value="flash">Flash grenade</option>
+            <option value="smoke">Smoke grenade</option>
+          </select>
+        </section>
+        <section class="section">
+          <div class="section-label">Model detail</div>
+          <div class="segmented" aria-label="Model detail selection">
+            <button data-detail="full" aria-pressed="true" disabled>Full</button
+            ><button data-detail="lod" aria-pressed="false" disabled>
+              LOD
+            </button>
+          </div>
+          <p class="detail-note">
+            The same compressed GLBs loaded by the game.
+          </p>
+        </section>
+        <div class="transport">
+          <button id="play" aria-pressed="true" disabled>Pause animation</button
+          ><button id="replay" disabled>Replay ↻</button>
+        </div>
+      </aside>
+      <section class="stage-wrap" aria-label="Interactive character preview">
+        <canvas
+          aria-label="3D character. Drag to orbit, scroll to zoom, and right-drag to pan."
+        ></canvas>
+        <div class="stage-heading">
+          <h2 id="name">SOLDIER</h2>
+          <p id="state-label">Idle · full detail</p>
+        </div>
+        <div class="asset-badge">ACTUAL GAME ASSET</div>
+        <div id="status" role="status" aria-live="polite">
+          <span>Loading game models…</span
+          ><progress value="0" max="1"></progress>
+        </div>
+        <footer class="stage-footer">
+          <p class="stage-help">
+            Drag to orbit · scroll to zoom<span
+              >Local inspection only. No rooms or server state.</span
+            >
+          </p>
+          <nav class="views" aria-label="Camera views">
+            <button data-view="front" aria-pressed="false" disabled>
+              Front</button
+            ><button data-view="three-quarter" aria-pressed="true" disabled>
+              Three-quarter</button
+            ><button data-view="back" aria-pressed="false" disabled>Back</button
+            ><button data-view="face" aria-pressed="false" disabled>
+              Face
+            </button>
+          </nav>
+        </footer>
+      </section>
+    </main>
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+      import { loadAssets } from "../src/assets.js";
+      import {
+        makePlayer,
+        makeGun,
+        animatePlayer,
+        disposeModel,
+      } from "../src/models.js";
+      import { WEAPONS } from "../shared/weapons.js";
+
+      const POSES = {
+        idle: "Idle",
+        walk: "Walk",
+        run: "Run",
+        crouch: "Crouch",
+        jump: "Jump",
+        shoot: "Shoot",
+        reload: "Reload",
+        draw: "Weapon switch",
+        throw: "Grenade throw",
+        death: "Death",
+      };
+      const stage = document.querySelector(".stage-wrap"),
+        status = document.querySelector("#status"),
+        weaponSelect = document.querySelector("#weapon");
+      const reducedMotion = matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      for (const [id, label] of Object.entries(POSES)) {
+        const button = document.createElement("button");
+        button.dataset.pose = id;
+        button.textContent = label;
+        button.setAttribute("aria-pressed", String(id === "idle"));
+        button.disabled = true;
+        document.querySelector(".poses").append(button);
+      }
+      let team = "soldiers",
+        pose = "idle",
+        lowDetail = false,
+        selectedWeapon = "m4a4",
+        currentWeapon = "",
+        root = null,
+        elapsed = 0,
+        playing = !reducedMotion,
+        ready = false,
+        cycleIndex = -1,
+        lastShot = -1,
+        lastFrame = performance.now(),
+        height = 2,
+        view = "three-quarter",
+        cameraTween = false;
+      const renderer = new THREE.WebGLRenderer({
+        canvas: document.querySelector("canvas"),
+        antialias: true,
+        powerPreference: "high-performance",
+      });
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.shadowMap.autoUpdate = false;
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x19474a);
+      scene.fog = new THREE.Fog(0x19474a, 9, 22);
+      const camera = new THREE.PerspectiveCamera(36, 1, 0.04, 50),
+        controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.09;
+      controls.minDistance = 0.62;
+      controls.maxDistance = 8;
+      controls.maxPolarAngle = Math.PI * 0.52;
+      controls.addEventListener("start", () => {
+        cameraTween = false;
+        document
+          .querySelectorAll("[data-view]")
+          .forEach((b) => b.setAttribute("aria-pressed", "false"));
+      });
+      const cameraGoal = new THREE.Vector3(),
+        targetGoal = new THREE.Vector3();
+      scene.add(new THREE.HemisphereLight(0xdeedf4, 0x263e3d, 0.8));
+      const key = new THREE.DirectionalLight(0xffe2bd, 3.2);
+      key.position.set(-3, 5, -4);
+      key.castShadow = true;
+      key.shadow.mapSize.set(2048, 2048);
+      Object.assign(key.shadow.camera, {
+        left: -4,
+        right: 4,
+        top: 4,
+        bottom: -4,
+        near: 0.1,
+        far: 18,
+      });
+      key.shadow.normalBias = 0.018;
+      scene.add(key);
+      const rim = new THREE.DirectionalLight(0x9bcee8, 2.2);
+      rim.position.set(3, 3, 2);
+      scene.add(rim);
+      const floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(45, 45),
+        new THREE.MeshStandardMaterial({ color: 0x245a5a, roughness: 0.8 }),
+      );
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -0.012;
+      floor.receiveShadow = true;
+      scene.add(floor);
+      const pmrem = new THREE.PMREMGenerator(renderer),
+        room = new RoomEnvironment(),
+        environment = pmrem.fromScene(room, 0.04);
+      scene.environment = environment.texture;
+      scene.environmentIntensity = 0.32;
+      room.dispose();
+      pmrem.dispose();
+
+      function resize() {
+        const w = stage.clientWidth,
+          h = stage.clientHeight;
+        renderer.setSize(w, h, false);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+      }
+      new ResizeObserver(resize).observe(stage);
+      resize();
+      function updateLabels() {
+        document.querySelector("#name").textContent =
+          team === "soldiers" ? "SOLDIER" : "TERRORIST";
+        document.querySelector("#state-label").textContent =
+          `${POSES[pose]} · ${lowDetail ? "distance LOD" : "full detail"}`;
+        document.querySelector("#play").textContent = playing
+          ? "Pause animation"
+          : "Play animation";
+        document
+          .querySelector("#play")
+          .setAttribute("aria-pressed", String(playing));
+        for (const [selector, value] of [
+          ["team", team],
+          ["pose", pose],
+          ["detail", lowDetail ? "lod" : "full"],
+          ["view", view],
+        ])
+          document
+            .querySelectorAll(`[data-${selector}]`)
+            .forEach((b) =>
+              b.setAttribute(
+                "aria-pressed",
+                String(b.dataset[selector] === value),
+              ),
+            );
+      }
+      function setView(id, instant = false) {
+        view = id;
+        const h = height;
+        targetGoal.set(0, id === "face" ? h * 0.84 : h * 0.49, 0);
+        const distance =
+          stage.clientWidth / stage.clientHeight < 0.85 ? 4.75 : 3.75;
+        if (id === "face") cameraGoal.set(-0.16, h * 0.865, -1.56);
+        else if (id === "front") cameraGoal.set(0, h * 0.57, -distance);
+        else if (id === "back") cameraGoal.set(0, h * 0.57, distance);
+        else cameraGoal.set(-distance * 0.48, h * 0.66, -distance * 0.9);
+        cameraTween = true;
+        if (instant || reducedMotion) {
+          camera.position.copy(cameraGoal);
+          controls.target.copy(targetGoal);
+          cameraTween = false;
+          controls.update();
+        }
+        updateLabels();
+      }
+      function dropRoot() {
+        if (!root) return;
+        root.removeFromParent();
+        root.userData.mixer?.stopAllAction();
+        root.userData.mixer?.uncacheRoot(root);
+        root.userData.labelTexture?.dispose();
+        root.userData.label?.material.dispose();
+        disposeModel(root);
+        root = null;
+      }
+      function equip(id) {
+        if (!root || currentWeapon === id) return;
+        if (root.userData.gun) {
+          root.userData.gun.removeFromParent();
+          disposeModel(root.userData.gun);
+        }
+        root.userData.gun = makeGun(id);
+        root.userData.weapon = id;
+        root.userData.weaponPivot.add(root.userData.gun);
+        currentWeapon = id;
+      }
+      function reset() {
+        elapsed = 0;
+        cycleIndex = -1;
+        lastShot = -1;
+        if (root) {
+          root.userData.death = 0;
+          root.userData.crouch = 0;
+          root.userData.flashAt = 0;
+          root.userData.land = 0;
+          root.userData.gun && (root.userData.gun.userData.draw = 1);
+        }
+        updateLabels();
+      }
+      function create() {
+        dropRoot();
+        root = makePlayer("CHARACTER LAB", team, lowDetail);
+        root.userData.label.visible = false;
+        scene.add(root);
+        height = root.userData.labelHeight - 0.12;
+        currentWeapon = "";
+        equip(pose === "throw" ? throwWeapon() : selectedWeapon);
+        reset();
+        renderer.shadowMap.needsUpdate = true;
+      }
+      function simulate(dt) {
+        if (!root) return;
+        let id = pose === "throw" ? throwWeapon() : selectedWeapon;
+        if (pose === "draw")
+          id =
+            Math.floor(elapsed / 2) % 2
+              ? "glock18"
+              : selectedWeapon === "glock18"
+                ? "m4a4"
+                : selectedWeapon;
+        equip(id);
+        const state = {
+          vx: 0,
+          vz: pose === "walk" ? -4.5 : pose === "run" ? -8.5 : 0,
+          yaw: 0,
+          pitch: 0,
+          hp: pose === "death" ? 0 : 100,
+          grounded: true,
+          crouch: pose === "crouch",
+          weapon: id,
+          reload: 0,
+          action: "idle",
+          actionTime: 0,
+        };
+        root.position.y = 0;
+        if (pose === "jump") {
+          const t = elapsed % 2.1;
+          state.grounded = t > 0.78;
+          if (!state.grounded)
+            root.position.y = Math.sin((t / 0.78) * Math.PI) * 0.35;
+        }
+        if (pose === "reload" && WEAPONS[id].reload > 0) {
+          const duration = WEAPONS[id].reload,
+            t = elapsed % (duration + 0.8);
+          state.reload = t < duration ? duration - t : 0;
+        }
+        if (pose === "throw") {
+          const t = elapsed % 1.65;
+          if (t < 0.55) {
+            state.action = "throw";
+            state.actionTime = 0.55 - t;
+          }
+        }
+        if (pose === "draw") {
+          const t = elapsed % 2;
+          if (t < 0.4) {
+            state.action = "draw";
+            state.actionTime = 0.4 - t;
+          }
+        }
+        if (pose === "shoot") {
+          const shot = Math.floor(
+            elapsed / Math.max(0.13, WEAPONS[id].interval || 0.3),
+          );
+          if (shot !== lastShot) {
+            root.userData.flashAt = elapsed + 0.055;
+            lastShot = shot;
+          }
+        }
+        if (pose === "death") {
+          const cycle = Math.floor(elapsed / 2.8);
+          if (cycle !== cycleIndex) {
+            root.userData.death = 0;
+            cycleIndex = cycle;
+          }
+        }
+        animatePlayer(root, state, elapsed, dt);
+        root.userData.label.visible = false;
+      }
+      function throwWeapon() {
+        return WEAPONS[selectedWeapon].type === "GRENADE"
+          ? selectedWeapon
+          : "he";
+      }
+      document.querySelectorAll("[data-team]").forEach((b) =>
+        b.addEventListener("click", () => {
+          team = b.dataset.team;
+          selectedWeapon = team === "soldiers" ? "m4a4" : "ak47";
+          weaponSelect.value = selectedWeapon;
+          create();
+        }),
+      );
+      document.querySelectorAll("[data-pose]").forEach((b) =>
+        b.addEventListener("click", () => {
+          pose = b.dataset.pose;
+          reset();
+          simulate(1 / 60);
+        }),
+      );
+      document.querySelectorAll("[data-detail]").forEach((b) =>
+        b.addEventListener("click", () => {
+          lowDetail = b.dataset.detail === "lod";
+          create();
+        }),
+      );
+      document
+        .querySelectorAll("[data-view]")
+        .forEach((b) =>
+          b.addEventListener("click", () => setView(b.dataset.view)),
+        );
+      weaponSelect.addEventListener("change", () => {
+        selectedWeapon = weaponSelect.value;
+        reset();
+        simulate(1 / 60);
+      });
+      document.querySelector("#play").addEventListener("click", () => {
+        playing = !playing;
+        updateLabels();
+      });
+      document.querySelector("#replay").addEventListener("click", () => {
+        reset();
+        simulate(1 / 60);
+      });
+      setView("three-quarter", true);
+      let shadowAt = 0;
+      function frame(now) {
+        requestAnimationFrame(frame);
+        const dt = Math.min((now - lastFrame) / 1000, 0.05);
+        lastFrame = now;
+        if (ready && playing) {
+          elapsed += dt;
+          simulate(dt);
+        }
+        if (cameraTween) {
+          const a = 1 - Math.exp(-12 * dt);
+          camera.position.lerp(cameraGoal, a);
+          controls.target.lerp(targetGoal, a);
+          if (camera.position.distanceTo(cameraGoal) < 0.003)
+            cameraTween = false;
+        }
+        controls.update();
+        if (now - shadowAt > 90) {
+          renderer.shadowMap.needsUpdate = true;
+          shadowAt = now;
+        }
+        renderer.render(scene, camera);
+      }
+      requestAnimationFrame(frame);
+      window.characterViewer = {
+        get state() {
+          return {
+            team,
+            pose,
+            lowDetail,
+            selectedWeapon,
+            currentWeapon,
+            playing,
+            view,
+            ready,
+            skinned: !!root?.userData.rig,
+          };
+        },
+      };
+      try {
+        await loadAssets((progress) => {
+          status.querySelector("progress").value = progress;
+          status.querySelector("span").textContent =
+            `Loading game models · ${Math.round(progress * 100)}%`;
+        });
+        create();
+        simulate(1 / 60);
+        ready = true;
+        document
+          .querySelectorAll("button,select")
+          .forEach((b) => (b.disabled = false));
+        status.hidden = true;
+        updateLabels();
+        window.characterViewerReady = true;
+      } catch (error) {
+        status.dataset.error = "true";
+        status.querySelector("span").textContent =
+          `Could not load the game models. ${error.message}`;
+        status.querySelector("progress").hidden = true;
+        window.characterViewerError = error.message;
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

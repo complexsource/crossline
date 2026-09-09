@@ -1,58 +1,313 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import {Game} from '../server/game.js';
-import {BOXES,SPAWNS,WEAPONS,move,overlaps,emptyInput,TICK} from '../shared/game.js';
+import test from "node:test";
+import assert from "node:assert/strict";
+import { WEAPONS, FIREARMS, emptyInput, TICK, move } from "../shared/game.js";
+import { fixture, lineUp } from "./helpers.js";
 
-function fixture(){let time=100;const events=[];const game=new Game((target,type,data)=>events.push({target,type,data}),{now:()=>time,random:()=>.5,duration:10});const room=game.enter('a','Alpha');game.enter('b','Bravo',room.code);return {game,room,events,advance:n=>{time+=n;}};}
-function lineUp(f){f.game.start('a');const a=f.game.player('a'),b=f.game.player('b');Object.assign(a,{x:-9,y:0,z:0,yaw:0,pitch:0,protectedUntil:0});Object.assign(b,{x:-9,y:0,z:-3,protectedUntil:0});a.input={...emptyInput()};return {a,b};}
-test('rooms: six-character codes, name validation, host-only start, capacity, balancing',()=>{
-  const {game,room}=fixture();assert.match(room.code,/^[A-Z0-9]{6}$/);assert.throws(()=>game.start('b'),/host/);assert.throws(()=>game.enter('z',''),/name/);assert.throws(()=>game.enter('z','z','BAD123'),/not found/);assert.throws(()=>game.enter('a','duplicate'),/Leave/);
-  for(let i=2;i<10;i++)game.enter(String(i),'Player '+i,room.code);
-  assert.throws(()=>game.enter('extra','extra',room.code),/full/);
-  for(const p of room.players.values())game.choose(p.id,{team:'red'});
-  game.start('a');assert.equal([...room.players.values()].filter(p=>p.team==='red').length,5);assert.equal(room.state,'playing');assert.throws(()=>game.choose('a',{team:'blue'}),/waiting/);assert.throws(()=>game.enter('late','late',room.code),/already started/);
+test("room codes, names, capacity, host-only control, ready state and auto-balance", () => {
+  const f = fixture(),
+    { game, room } = f;
+  assert.match(room.code, /^[A-Z0-9]{6}$/);
+  assert.throws(() => game.start("b"), /host/);
+  assert.throws(() => game.start("a"), /ready/);
+  assert.throws(() => game.enter("z", "\u0001"), /name/);
+  assert.throws(() => game.enter("z", "z", "BAD123"), /not found/);
+  assert.throws(() => game.enter("a", "duplicate"), /Leave/);
+  for (let i = 2; i < 10; i++) game.enter(String(i), "Player " + i, room.code);
+  assert.throws(() => game.enter("extra", "Extra", room.code), /full/);
+  for (const p of room.players.values())
+    game.choose(p.id, { team: "soldiers", ready: true });
+  game.start("a");
+  assert.equal(
+    [...room.players.values()].filter((p) => p.team === "soldiers").length,
+    5,
+  );
+  assert.equal(room.state, "playing");
+  assert.throws(() => game.choose("a", { team: "terrorists" }), /waiting/);
+  assert.throws(() => game.enter("late", "Late", room.code), /started/);
 });
-test('all spawns are free of collisions and team players receive valid loadouts',()=>{
-  for(const spawns of Object.values(SPAWNS))for(const s of spawns)assert.equal(BOXES.some(b=>overlaps({...s,y:0,crouch:false},b)),false,JSON.stringify(s));
-  const {game,room}=fixture();game.start('a');for(const p of room.players.values()){assert.equal(p.hp,100);assert.equal(p.ammo[p.primary].mag,30);assert.equal(p.grenadeCount,1);}
+test("load handshake excludes asset loading from match clock and rejects stale epochs", () => {
+  const f = fixture({ loadHandshake: true }),
+    { game, room } = f;
+  f.ready();
+  game.start("a");
+  assert.equal(room.state, "loading");
+  assert.equal(room.endsAt, undefined);
+  game.loaded("a", "old");
+  assert.equal(game.player("a").loaded, false);
+  game.loaded("a", room.loadEpoch);
+  f.advance(20);
+  game.tick();
+  assert.equal(room.state, "loading");
+  game.loaded("b", room.loadEpoch);
+  assert.equal(room.state, "countdown");
+  f.advance(2.99);
+  game.tick();
+  assert.equal(room.state, "countdown");
+  f.advance(0.02);
+  game.tick();
+  assert.equal(room.state, "playing");
+  assert.equal(room.endsAt - game.now(), 60);
 });
-test('authoritative hits: headshot multiplier, fire interval, kill score, three-second respawn',()=>{
-  const f=fixture(),{a,b}=lineUp(f);f.game.fire(f.room,a);assert.equal(b.hp,25);assert.equal(a.ammo.vektor.mag,29);
-  f.game.fire(f.room,a);assert.equal(b.hp,25);f.advance(.12);f.game.fire(f.room,a);assert.equal(b.hp,0);assert.equal(a.kills,1);assert.equal(b.deaths,1);assert.equal(f.room.scores.red,1);
-  f.advance(2.9);f.game.tick();assert.equal(b.hp,0);f.advance(.11);f.game.tick();assert.equal(b.hp,100);assert.equal(b.spawnId,2);assert.equal(b.kills,0);assert.equal(b.deaths,1);
+test("loading timeout and disconnect return safely to the same room", () => {
+  const f = fixture({ loadHandshake: true });
+  f.ready();
+  f.game.start("a");
+  f.advance(46);
+  f.game.tick();
+  assert.equal(f.room.state, "lobby");
+  assert.ok(f.room.notice);
+  f.ready();
+  f.game.start("a");
+  f.game.leave("b");
+  assert.equal(f.room.state, "lobby");
+  assert.equal(f.room.players.size, 1);
 });
-test('body hits, walls, friendly fire and spawn protection',()=>{
-  const f=fixture(),{a,b}=lineUp(f);a.pitch=-.2;f.game.fire(f.room,a);assert.equal(b.hp,70);
-  f.advance(.2);a.pitch=0;b.protectedUntil=1000;f.game.fire(f.room,a);assert.equal(b.hp,70);b.protectedUntil=0;
-  f.advance(.2);b.team=a.team;f.game.fire(f.room,a);assert.equal(b.hp,70);b.team='blue';
-  f.advance(.2);Object.assign(a,{x:0,z:4});Object.assign(b,{x:0,z:-4});a.pitch=-.12;f.game.fire(f.room,a);assert.equal(b.hp,70,'center crate blocks shot');
+test("headshot, damage, cadence, kill, score and three-second respawn are server owned", () => {
+  const f = fixture(),
+    { a, b } = lineUp(f),
+    w = WEAPONS[a.weapon];
+  f.game.fire(f.room, a);
+  assert.equal(b.hp, 100 - Math.round(w.damage * w.headshot));
+  const hp = b.hp;
+  f.game.fire(f.room, a);
+  assert.equal(b.hp, hp);
+  f.advance(w.interval + 0.01);
+  f.game.fire(f.room, a);
+  assert.equal(b.hp, 0);
+  assert.equal(a.kills, 1);
+  assert.equal(a.headshots, 1);
+  assert.equal(a.damage, 100);
+  assert.equal(b.deaths, 1);
+  assert.equal(f.room.scores.soldiers, 1);
+  assert.equal(f.room.drops.length, 1);
+  f.advance(2.9);
+  f.game.tick();
+  assert.equal(b.hp, 0);
+  f.advance(0.11);
+  f.game.tick();
+  assert.equal(b.hp, 100);
+  assert.equal(b.spawnId, 2);
+  assert.equal(b.deaths, 1);
+  assert.deepEqual(b.grenades, { he: 1, flash: 1, smoke: 1 });
 });
-test('ammo, reload completion, cancellation, invalid weapon and grenade limits',()=>{
-  const f=fixture(),{a}=lineUp(f);a.ammo.vektor.mag=0;f.game.fire(f.room,a);assert.equal(a.ammo.vektor.mag,0);
-  f.game.action('a','reload');assert.ok(a.reloadAt);f.advance(2.5);f.game.tick();assert.equal(a.ammo.vektor.mag,30);assert.equal(a.ammo.vektor.reserve,90);
-  a.ammo.vektor.mag=10;f.game.action('a','reload');f.game.action('a','switch','pistol');assert.equal(a.reloadAt,0);f.game.action('a','switch','longshot');assert.equal(a.weapon,'pistol');
-  f.game.action('a','grenade');f.game.action('a','grenade');assert.equal(f.room.grenades.length,1);assert.equal(a.grenadeCount,0);
+test("body hits, walls, friendly fire and spawn protection", () => {
+  const f = fixture(),
+    { a, b } = lineUp(f);
+  a.pitch = -0.2;
+  f.game.fire(f.room, a);
+  assert.equal(b.hp, 100 - WEAPONS[a.weapon].damage);
+  const hp = b.hp;
+  f.advance(0.3);
+  a.pitch = 0;
+  b.protectedUntil = 1000;
+  f.game.fire(f.room, a);
+  assert.equal(b.hp, hp);
+  b.protectedUntil = 0;
+  f.advance(0.3);
+  b.team = a.team;
+  f.game.fire(f.room, a);
+  assert.equal(b.hp, hp);
+  b.team = "terrorists";
+  f.advance(0.3);
+  Object.assign(a, { x: -29, z: 0 });
+  Object.assign(b, { x: -29, z: -8 });
+  f.game.fire(f.room, a);
+  assert.equal(b.hp, hp, "building blocks hits");
 });
-test('grenade explosion is server-owned, obeys line of sight, and awards an enemy kill once',()=>{
-  const f=fixture(),{a,b}=lineUp(f);Object.assign(a,{x:-6,z:8});Object.assign(b,{x:-6,z:0,hp:10});
-  f.room.grenades.push({id:'test',owner:'a',team:'red',x:-6,y:1,z:0,vx:0,vy:0,vz:0,explodeAt:100});f.game.tick();assert.equal(b.hp,0);assert.equal(a.kills,1);assert.equal(f.room.grenades.length,0);f.game.tick();assert.equal(a.kills,1);
-});
-test('all weapons have distinct server firing behavior and the knife is range-limited',()=>{
-  for(const id of Object.keys(WEAPONS)){
-    const f=fixture(),{a,b}=lineUp(f);a.weapon=id;a.ammo[id]={mag:WEAPONS[id].mag,reserve:WEAPONS[id].reserve};if(id==='knife')b.z=-1.5;
-    f.game.fire(f.room,a);assert.ok(b.hp<100,id+' deals damage');
+test("all 34 firearms and the range-limited knife use configured damage and ammo", () => {
+  assert.equal(FIREARMS.length, 34);
+  for (const id of [...FIREARMS, "knife"]) {
+    const f = fixture(),
+      { a, b } = lineUp(f);
+    a.weapon = id;
+    a.ammo[id] = { mag: WEAPONS[id].mag, reserve: WEAPONS[id].reserve };
+    if (id === "knife") b.z = -15.5;
+    f.game.fire(f.room, a);
+    assert.ok(b.hp < 100, id);
+    if (id !== "knife") assert.equal(a.ammo[id].mag, WEAPONS[id].mag - 1);
   }
-  const f=fixture(),{a,b}=lineUp(f);a.weapon='knife';b.z=-5;f.game.fire(f.room,a);assert.equal(b.hp,100);
+  const f = fixture(),
+    { a, b } = lineUp(f);
+  a.weapon = "knife";
+  b.z = -20;
+  f.game.fire(f.room, a);
+  assert.equal(b.hp, 100);
 });
-test('movement collision, jump, crouch, speed and client-state tampering',()=>{
-  const f=fixture(),{a}=lineUp(f);Object.assign(a,{x:0,z:3});for(let i=0;i<120;i++)move(a,{...emptyInput(),forward:true},TICK);assert.ok(a.z>=1.8,'cannot cross crate');
-  Object.assign(a,{x:-6,z:0,grounded:true});move(a,{...emptyInput(),jump:true},TICK);assert.ok(a.y>0);for(let i=0;i<120;i++)move(a,emptyInput(),TICK);assert.equal(a.y,0);
-  move(a,{...emptyInput(),crouch:true},TICK);assert.equal(a.crouch,true);
-  const before=a.x;f.game.input('a',{seq:1,spawnId:a.spawnId,yaw:NaN,pitch:0,x:999,hp:999});assert.equal(a.x,before);assert.equal(a.hp,100);
-  f.game.input('a',{seq:1,spawnId:a.spawnId,...emptyInput(),x:999,hp:999});f.game.tick();assert.notEqual(a.x,999);assert.equal(a.hp,100);
+test("reload completion, ammo conservation, cancellation, previous and owned-only switches", () => {
+  const f = fixture(),
+    { a } = lineUp(f),
+    id = a.weapon;
+  a.ammo[id].mag = 0;
+  f.game.action("a", "reload");
+  f.advance(WEAPONS[id].reload + 0.01);
+  f.game.tick();
+  assert.equal(a.ammo[id].mag, WEAPONS[id].mag);
+  assert.equal(a.ammo[id].reserve, WEAPONS[id].reserve - WEAPONS[id].mag);
+  a.ammo[id].mag = 10;
+  f.game.action("a", "reload");
+  f.game.action("a", "switch", "secondary");
+  assert.equal(a.reloadAt, 0);
+  assert.equal(a.weapon, a.secondary);
+  f.game.action("a", "switch", "awp");
+  assert.equal(a.weapon, a.secondary);
+  f.game.action("a", "switch", "previous");
+  assert.equal(a.weapon, id);
+  f.game.action("a", "switch", "grenade");
+  assert.equal(a.weapon, "he");
+  f.game.action("a", "switch", "grenade");
+  assert.equal(a.weapon, "flash");
+  f.game.action("a", "switch", "grenade");
+  assert.equal(a.weapon, "smoke");
 });
-test('match results, same-room replay, host transfer and room cleanup',()=>{
-  const f=fixture();f.game.start('a');f.room.scores.blue=3;f.advance(11);f.game.tick();assert.equal(f.room.results.winner,'blue');assert.equal(f.room.state,'results');assert.throws(()=>f.game.returnRoom('b'),/host/);
-  f.game.returnRoom('a');assert.equal(f.room.state,'lobby');f.game.start('a');assert.equal(f.room.scores.blue,0);assert.equal(f.room.players.size,2);
-  f.game.leave('a');assert.equal(f.room.host,'b');assert.equal(f.room.state,'results');f.game.leave('b');assert.equal(f.game.rooms.size,0);assert.equal(f.game.members.size,0);
+test("HE, Flash and Smoke inventory, effects and lifetime are authoritative", () => {
+  const f = fixture(),
+    { a, b } = lineUp(f);
+  f.game.action("a", "switch", "grenade");
+  f.advance(0.21);
+  f.game.throwGrenade(f.room, a);
+  assert.equal(a.grenades.he, 0);
+  assert.equal(f.room.grenades.length, 1);
+  assert.equal(a.weapon, "he", "throw keeps grenade until animation ends");
+  f.advance(0.56);
+  f.game.tick();
+  assert.equal(a.weapon, a.primary);
+  b.hp = 10;
+  f.game.detonate(f.room, {
+    kind: "he",
+    owner: "a",
+    team: "soldiers",
+    x: b.x,
+    y: 1,
+    z: b.z,
+  });
+  assert.equal(b.hp, 0);
+  assert.equal(a.kills, 1);
+  f.game.spawn(f.room, b);
+  Object.assign(b, { x: -10, y: 0, z: -17, protectedUntil: 0 });
+  f.game.detonate(f.room, {
+    kind: "smoke",
+    id: "smoke1",
+    x: -10,
+    y: 0,
+    z: -17,
+  });
+  assert.equal(f.room.smokes[0].radius, 4.6);
+  f.advance(15.1);
+  f.game.tick();
+  assert.equal(f.room.smokes.length, 0);
+});
+test("flash exposure respects facing, distance and wall obstruction", () => {
+  const f = fixture(),
+    { a, b } = lineUp(f),
+    g = {
+      kind: "flash",
+      owner: "a",
+      team: "soldiers",
+      x: -10,
+      y: 1.62,
+      z: -14,
+    };
+  b.yaw = Math.PI;
+  f.game.detonate(f.room, g);
+  const forward = f.events
+    .filter((e) => e.target === "b" && e.type === "flash")
+    .at(-1).data.strength;
+  b.yaw = 0;
+  f.game.detonate(f.room, g);
+  const behind = f.events
+    .filter((e) => e.target === "b" && e.type === "flash")
+    .at(-1).data.strength;
+  assert.ok(forward > behind * 3);
+  const n = f.events.length;
+  Object.assign(b, { x: -29, z: -8 });
+  f.game.detonate(f.room, { ...g, x: -29, z: 0 });
+  assert.equal(
+    f.events.slice(n).filter((e) => e.type === "flash" && e.target === "b")
+      .length,
+    0,
+  );
+});
+test("input rejects tampered state, nonfinite values, stale sequence and old spawn packets", () => {
+  const f = fixture(),
+    { a } = lineUp(f);
+  f.game.input("a", {
+    ...emptyInput(),
+    seq: 1,
+    spawnId: a.spawnId,
+    yaw: NaN,
+    x: 999,
+    hp: 999,
+  });
+  assert.equal(a.receivedSeq, 0);
+  f.game.input("a", {
+    ...emptyInput(),
+    seq: 1,
+    spawnId: a.spawnId,
+    x: 999,
+    hp: 999,
+  });
+  f.game.tick();
+  assert.notEqual(a.x, 999);
+  assert.equal(a.hp, 100);
+  assert.equal(a.ack, 1);
+  f.game.input("a", {
+    ...emptyInput(),
+    seq: 1,
+    spawnId: a.spawnId,
+    forward: true,
+  });
+  assert.equal(a.input.forward, false);
+  f.game.input("a", {
+    ...emptyInput(),
+    seq: 2,
+    spawnId: a.spawnId - 1,
+    forward: true,
+  });
+  assert.equal(a.input.forward, false);
+});
+test("a short click between simulation ticks fires once without bypassing cadence", () => {
+  const f = fixture(),
+    { a, b } = lineUp(f);
+  const mag = a.ammo[a.weapon].mag;
+  f.game.action("a", "fire", {
+    yaw: 0,
+    pitch: 0,
+    aim: false,
+    spawnId: a.spawnId,
+    fireEpoch: a.fireEpoch, weapon: a.weapon, pressId: 1,
+  });
+  f.game.tick();
+  assert.equal(a.ammo[a.weapon].mag, mag - 1);
+  f.game.action("a", "fire", {
+    yaw: 0,
+    pitch: 0,
+    aim: false,
+    spawnId: a.spawnId,
+    fireEpoch: a.fireEpoch, weapon: a.weapon, pressId: 2,
+  });
+  f.game.tick();
+  assert.equal(a.ammo[a.weapon].mag, mag - 1);
+  assert.ok(b.hp < 100);
+});
+test("results save exactly once, keep stats, replay resets, host transfer and cleanup", () => {
+  const f = fixture();
+  f.ready();
+  f.game.start("a");
+  f.room.scores.terrorists = 3;
+  f.advance(61);
+  f.game.tick();
+  f.game.finish(f.room);
+  assert.equal(f.saved.length, 1);
+  assert.equal(f.room.results.winner, "terrorists");
+  assert.equal(f.room.results.players.length, 2);
+  assert.throws(() => f.game.returnRoom("b"), /host/);
+  f.game.returnRoom("a");
+  f.ready();
+  f.game.start("a");
+  assert.equal(f.room.scores.terrorists, 0);
+  f.game.leave("a");
+  assert.equal(f.room.host, "b");
+  assert.equal(f.room.state, "results");
+  f.game.leave("b");
+  assert.equal(f.game.rooms.size, 0);
 });
