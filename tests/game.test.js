@@ -52,7 +52,7 @@ test("loading timeout and disconnect return safely to the same room", () => {
   const f = fixture({ loadHandshake: true });
   f.ready();
   f.game.start("a");
-  f.advance(46);
+  f.advance(121);
   f.game.tick();
   assert.equal(f.room.state, "lobby");
   assert.ok(f.room.notice);

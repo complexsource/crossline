@@ -237,7 +237,7 @@ export class Game {
     r.drops = [];
     r.loadEpoch = randomBytes(6).toString("hex");
     r.state = "loading";
-    r.loadingDeadline = this.now() + 45;
+    r.loadingDeadline = this.now() + 120;
     for (const p of r.players.values()) {
       p.loaded = false;
       p.kills = p.deaths = p.headshots = p.damage = 0;

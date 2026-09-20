@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { appendFile, mkdir } from "node:fs/promises";
 import { Game } from "./game.js";
+import { packSnapshot } from "../shared/snapshot.js";
 
 export async function createGameServer({
   production = false,
@@ -25,7 +26,10 @@ export async function createGameServer({
   });
   let statsWrites = Promise.resolve();
   const game = new Game(
-    (target, event, data) => io.to(target).emit(event, data),
+    (target, event, data) =>
+      event === "state"
+        ? io.to(target).volatile.emit(event, packSnapshot(data))
+        : io.to(target).emit(event, data),
     {
       duration,
       now,

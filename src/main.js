@@ -23,6 +23,9 @@ import {
 } from "./settings.js";
 import { Sound } from "./audio.js";
 import { openDialog } from "./dialog.js";
+import { GraphicsRecovery } from "./graphics-recovery.js";
+import { effectiveQuality } from "./performance.js";
+import { unpackSnapshot } from "../shared/snapshot.js";
 import "./style.css";
 
 const app = document.querySelector("#app"),
@@ -49,6 +52,7 @@ let room = null,
   loadingEpoch = null,
   loadProgress = 0,
   loadText = "",
+  loadingError = "",
   countdownUntil = 0,
   lastCountdown = 0;
 let playing = false,
@@ -78,6 +82,35 @@ let feed = [],
   stepAt = 0,
   wasFiring = false,
   renderAt = 0;
+const recovery = new GraphicsRecovery(canvas, {
+  pause: () => {
+    resetInput();
+    pending = [];
+  },
+  restore: async (contextRestored) => {
+    if (!graphics || graphics.renderer.getContext().isContextLost())
+      throw Error("The graphics driver has not restored WebGL yet");
+    settings.quality = "low";
+    saveSettings();
+    if (contextRestored) graphics.restoreContext();
+    graphics.clearEffects();
+    graphics.clearPlayers();
+    if (snapshot) graphics.sync(snapshot, socket.id);
+    await graphics.warmup(currentAssets());
+    pending = [];
+    accumulator = 0;
+    renderAt = performance.now();
+    toast("Graphics restored on Low. Click Enter Match to continue.");
+  },
+});
+function guardGraphics(action) {
+  if (recovery.blocked) return;
+  try {
+    return action();
+  } catch (error) {
+    recovery.fail(error);
+  }
+}
 try {
   name = localStorage.getItem("crossline-name") || "";
 } catch {}
@@ -112,6 +145,13 @@ function call(event, data = {}) {
   );
 }
 const k = (action) => keyLabel(settings.bindings[action]);
+function updateMarkup(selector, html) {
+  const element = $(selector);
+  if (element && element._lastMarkup !== html) {
+    element.innerHTML = html;
+    element._lastMarkup = html;
+  }
+}
 function chrome(content) {
   canvas.classList.remove("active");
   return `<div class="shell"><header>${logo}<div class="online"><i class="${socket.connected ? "" : "offline"}"></i>${socket.connected ? "SERVER ONLINE" : "CONNECTING…"}</div></header>${content}<footer><span>COASTLINE <b>OPERATIONS / 02</b></span><span>DESKTOP · KEYBOARD + MOUSE</span><span>TEAM DEATHMATCH <b>2–10 PLAYERS</b></span></footer></div>`;
@@ -260,26 +300,45 @@ async function leave() {
 }
 async function ensureAssets() {
   if (assetPromise) return assetPromise;
+  loadingError = "";
   assetPromise = (async () => {
     loadText = "Preparing renderer";
     loadProgress = 0.02;
-    const [{ Renderer }, { loadAssets }, { materialsReady }] =
+    const [{ Renderer }, { loadAssets, matchAssetIds }, { materialsReady }] =
       await Promise.all([
         import("./renderer.js"),
         import("./assets.js"),
         import("./materials.js"),
       ]);
     loadText = "Loading models";
-    await loadAssets((value) => {
-      loadProgress = 0.06 + value * 0.77;
-      updateLoading();
-    });
+    await loadAssets(
+      (value) => {
+        loadProgress = 0.06 + value * 0.77;
+        updateLoading();
+      },
+      {
+        ids: matchAssetIds(room?.players),
+        textureLimit:
+          settings.textures === "low" ||
+          effectiveQuality(settings.quality) === "low"
+            ? 512
+            : effectiveQuality(settings.quality) === "medium"
+              ? 1024
+              : 2048,
+      },
+    );
     loadText = "Preparing materials";
     await materialsReady;
     loadProgress = 0.86;
     updateLoading();
     if (!graphics) {
-      graphics = new Renderer(canvas, settings);
+      try {
+        graphics = new Renderer(canvas, settings);
+      } catch {
+        throw Error(
+          "WebGL 2 could not start. Enable browser hardware acceleration and update your graphics driver, then reload.",
+        );
+      }
       graphics.setQuality(settings.quality);
       graphics.onGrenadeBounce = (position) => {
         if (!local || !playing) return;
@@ -303,17 +362,32 @@ async function ensureAssets() {
     loadText = "Building COASTLINE";
     loadProgress = 0.94;
     updateLoading();
-    await graphics.renderer.compileAsync(graphics.scene, graphics.camera);
+    await graphics.warmup(currentAssets());
     loadProgress = 1;
     loadText = "Ready to deploy";
     updateLoading();
-  })().catch((error) => {
-    assetPromise = null;
-    loadText = error.message;
-    updateLoading();
-    throw error;
-  });
+  })()
+    .catch((error) => {
+      loadingError = error.message;
+      loadText = error.message;
+      updateLoading();
+      throw error;
+    })
+    .finally(() => {
+      assetPromise = null;
+    });
   return assetPromise;
+}
+function currentAssets() {
+  return [
+    ...new Set([
+      "knife",
+      ...GRENADES,
+      ...(room?.players || [])
+        .flatMap((p) => [p.primary, p.secondary])
+        .filter(Boolean),
+    ]),
+  ];
 }
 function showLoading() {
   page = "loading";
@@ -329,6 +403,23 @@ function updateLoading() {
   $("#load-label").textContent = loadText || "Preparing deployment";
   $("#load-percent").textContent = `${Math.round(loadProgress * 100)}%`;
   $("#load-bar").style.width = `${loadProgress * 100}%`;
+  if (loadingError && !$("#retry-loading")) {
+    const button = document.createElement("button");
+    button.id = "retry-loading";
+    button.textContent = "RETRY LOADING";
+    button.onclick = async () => {
+      const epoch = room?.loadEpoch;
+      button.remove();
+      try {
+        await ensureAssets();
+        if (room?.state === "loading" && room.loadEpoch === epoch)
+          await call("loaded", { epoch });
+      } catch (error) {
+        toast(`Loading failed: ${error.message}`);
+      }
+    };
+    $(".loading-bottom").append(button);
+  }
 }
 const table = (players, results = false) =>
   `<table><thead><tr><th>PLAYER</th><th>K</th><th>D</th>${results ? "<th>K/D</th><th>HS</th><th>DAMAGE</th>" : ""}<th>SCORE</th><th>PING</th></tr></thead><tbody>${players.map((p) => `<tr class="${p.id === socket.id ? "self" : ""}"><td><i class="team-dot ${p.team}"></i>${esc(p.name)}${p.id === socket.id ? " <small>YOU</small>" : ""}</td><td>${p.kills}</td><td>${p.deaths}</td>${results ? `<td>${Number(p.kd).toFixed(2)}</td><td>${p.headshots}</td><td>${p.damage}</td>` : ""}<td>${p.score ?? p.kills * 100}</td><td>${p.ping} <small>ms</small></td></tr>`).join("")}</tbody></table>`;
@@ -488,6 +579,7 @@ socket.on("room", (data) => {
       countdownUntil = performance.now() + data.countdown * 1000;
     showLoading();
     if (loadingEpoch !== data.loadEpoch) {
+      loadingError = "";
       loadingEpoch = data.loadEpoch;
       const epoch = loadingEpoch;
       ensureAssets()
@@ -508,10 +600,11 @@ socket.on("room", (data) => {
 });
 socket.on("state", (state) => {
   if (!playing || !graphics) return;
+  state = unpackSnapshot(state);
   snapshot = state;
   const own = state.players.find((p) => p.id === socket.id);
   if (!own) return;
-  graphics.sync(state, socket.id);
+  guardGraphics(() => graphics.sync(state, socket.id));
   if (own.hp <= 0 || (local && local.weapon !== own.weapon))
     sound.cancelReload();
   if (
@@ -554,7 +647,7 @@ socket.on("state", (state) => {
 });
 socket.on("fx", (event) => {
   if (!playing) return;
-  graphics?.fx(event, socket.id);
+  guardGraphics(() => graphics?.fx(event, socket.id));
   if (event.type === "kill") {
     feed.unshift({ ...event, at: performance.now() });
     feed = feed.slice(0, 5);
@@ -691,7 +784,8 @@ function feedbackShot(now) {
   fxAt = now + w.interval * 1000;
 }
 function control(code, down, repeat = false) {
-  if (!playing || $("#settings-modal") || $("#guide")) return false;
+  if (!playing || recovery.blocked || $("#settings-modal") || $("#guide"))
+    return false;
   const action = Object.entries(settings.bindings).find(
     ([, key]) => key === code,
   )?.[0];
@@ -816,7 +910,7 @@ function updateHud(now) {
   if (!playing || !local || !snapshot) return;
   const text = (id, value) => {
       const el = document.getElementById(id);
-      if (el) el.textContent = value;
+      if (el && el.textContent !== String(value)) el.textContent = value;
     },
     w = WEAPONS[local.weapon],
     secs = Math.max(0, Math.ceil(snapshot.remaining));
@@ -874,26 +968,32 @@ function updateHud(now) {
   if (scoreboard)
     $("#board").innerHTML =
       `<div class="board-title">COASTLINE <small>ROOM ${room.code}</small></div>${TEAM_IDS.map((t) => `<h3 class="${t}">${TEAMS[t].name}</h3>${table(snapshot.players.filter((p) => p.team === t).sort((a, b) => b.kills - a.kills))}`).join("")}`;
-  $("#weapon-slots").innerHTML = [
-    ["primary", local.slots.primary],
-    ["secondary", local.slots.secondary],
-    ["knife", "knife"],
-    ...GRENADES.map((id) => ["grenade", id]),
-  ]
-    .map(
-      ([key, id]) =>
-        `<span class="${id === local.weapon ? "active" : ""} ${!id ? "empty" : ""}"><kbd>${k(key)}</kbd>${!id ? "EMPTY" : GRENADES.includes(id) ? `${id.toUpperCase()} ${local.grenades[id]}` : WEAPONS[id].name}</span>`,
-    )
-    .join("");
+  updateMarkup(
+    "#weapon-slots",
+    [
+      ["primary", local.slots.primary],
+      ["secondary", local.slots.secondary],
+      ["knife", "knife"],
+      ...GRENADES.map((id) => ["grenade", id]),
+    ]
+      .map(
+        ([key, id]) =>
+          `<span class="${id === local.weapon ? "active" : ""} ${!id ? "empty" : ""}"><kbd>${k(key)}</kbd>${!id ? "EMPTY" : GRENADES.includes(id) ? `${id.toUpperCase()} ${local.grenades[id]}` : WEAPONS[id].name}</span>`,
+      )
+      .join(""),
+  );
   feed = feed.filter((f) => now - f.at < 6500);
-  $("#kill-feed").innerHTML = settings.killfeed
-    ? feed
-        .map(
-          (f) =>
-            `<div><b class="${f.team}">${esc(f.killer)}</b><span>${f.weapon === "he" ? '<i aria-label="Grenade kill">✹</i> ' : f.headshot ? "⌖ " : ""}${esc(WEAPONS[f.weapon]?.name)}</span><b>${esc(f.victim)}</b></div>`,
-        )
-        .join("")
-    : "";
+  updateMarkup(
+    "#kill-feed",
+    settings.killfeed
+      ? feed
+          .map(
+            (f) =>
+              `<div><b class="${f.team}">${esc(f.killer)}</b><span>${f.weapon === "he" ? '<i aria-label="Grenade kill">✹</i> ' : f.headshot ? "⌖ " : ""}${esc(WEAPONS[f.weapon]?.name)}</span><b>${esc(f.victim)}</b></div>`,
+          )
+          .join("")
+      : "",
+  );
   const nearest = (snapshot.drops || [])
     .filter((d) => {
       const dx = d.x - local.x,
@@ -923,12 +1023,24 @@ function updateHud(now) {
       : "",
   );
   $("#pickup-prompt").classList.toggle("visible", !!nearest && locked);
-  $("#chat-log").innerHTML = chat
-    .filter((m) => now - m.at < 12000)
-    .map((m) => `<div><b>${esc(m.name)}</b> ${esc(m.message)}</div>`)
-    .join("");
+  updateMarkup(
+    "#chat-log",
+    chat
+      .filter((m) => now - m.at < 12000)
+      .map((m) => `<div><b>${esc(m.name)}</b> ${esc(m.message)}</div>`)
+      .join(""),
+  );
 }
 function frame(now) {
+  // Schedule first: a single render exception must never kill the app loop.
+  requestAnimationFrame(frame);
+  try {
+    advanceFrame(now);
+  } catch (error) {
+    recovery.fail(error);
+  }
+}
+function advanceFrame(now) {
   const elapsed = (now - last) / 1000,
     dt = Math.min(0.05, elapsed);
   last = now;
@@ -966,7 +1078,7 @@ function frame(now) {
     ) {
       const w = WEAPONS[local.weapon];
       if (now >= fxAt && (w.auto || !wasFiring)) {
-        graphics.localShot(local.weapon);
+        guardGraphics(() => graphics.localShot(local.weapon));
         sound.play(local.weapon);
         input.pitch = Math.min(
           1.48,
@@ -992,10 +1104,13 @@ function frame(now) {
   }
   if (
     graphics &&
+    !recovery.blocked &&
+    !document.hidden &&
     playing &&
     now - renderAt >= 1000 / (settings.fpsLimit || 1000) - 1
   ) {
     const renderDt = Math.min(0.1, (now - renderAt) / 1000);
+    graphics.sampleFrame(now - renderAt);
     fps += (1 / Math.max(0.001, renderDt) - fps) * 0.08;
     graphics.render(
       renderDt,
@@ -1042,7 +1157,6 @@ function frame(now) {
               Math.min(2, flashStrength * 3),
           )
         : 0;
-  requestAnimationFrame(frame);
 }
 showHome();
 requestAnimationFrame(frame);

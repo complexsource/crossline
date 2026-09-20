@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { WEAPONS } from "../shared/weapons.js";
 import { TEAMS } from "../shared/teams.js";
 import { GRENADE_THROW_SECONDS } from "../shared/actions.js";
-import { instance } from "./assets.js";
+import { instance, worldWeaponInstance } from "./assets.js";
 import {
   radialTexture,
   joint,
@@ -31,7 +31,7 @@ export const makeGrenade = (kind = "he") => {
   return model;
 };
 export function makeGun(id, firstPerson = false, team = "soldiers") {
-  const g = instance(id),
+  const g = firstPerson ? instance(id) : worldWeaponInstance(id),
     muzzle = g.getObjectByName("muzzle"),
     flash = new THREE.Sprite(
       new THREE.SpriteMaterial({
@@ -150,7 +150,11 @@ export function animateGun(
   for (const m of u.magazines) {
     if (!m.userData.restPosition) m.userData.restPosition = m.position.clone();
     m.position.copy(m.userData.restPosition);
-    if (!pose.tube) m.position.add(new THREE.Vector3(...pose.magazine));
+    if (!pose.tube) {
+      m.position.x += pose.magazine[0];
+      m.position.y += pose.magazine[1];
+      m.position.z += pose.magazine[2];
+    }
     m.rotation.x = pose.tube ? 0 : pose.magazineAngle;
   }
   for (const b of u.bolts) {

@@ -15,14 +15,16 @@ import { WEAPONS, eyeHeight } from "../shared/game.js";
 import { GRENADE_THROW_SECONDS } from "../shared/actions.js";
 import { groundAt } from "../shared/maps.js";
 import { smokeVolume } from "./smoke.js";
-import { assetMaterials } from "./assets.js";
+import { assetMaterials, setCharacterDetail } from "./assets.js";
+import { TEAMS } from "../shared/teams.js";
 import { weaponPose, reloadPose, smooth } from "./weapon-motion.js";
-export const QUALITY = {
-  low: { dpr: 0.85, shadow: 0, particles: 45, detail: 24 },
-  medium: { dpr: 1, shadow: 1024, particles: 100, detail: 42 },
-  high: { dpr: 1.5, shadow: 2048, particles: 180, detail: 65 },
-  ultra: { dpr: 2, shadow: 4096, particles: 260, detail: 95 },
-};
+import {
+  QUALITY,
+  effectiveQuality,
+  pixelRatio,
+  AdaptiveResolution,
+} from "./performance.js";
+export { QUALITY } from "./performance.js";
 export class Renderer {
   constructor(canvas, options = {}) {
     this.options = options;
@@ -38,8 +40,20 @@ export class Renderer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1;
     this.scene = new THREE.Scene();
+    // Never add/remove lights in combat: light-count changes recompile every
+    // affected PBR shader. Two reusable, shadowless lights cover brief flashes.
+    this.fxLights = Array.from({ length: 2 }, () => {
+      const light = new THREE.PointLight(0xffa533, 0, 12);
+      this.scene.add(light);
+      light.userData.until = 0;
+      return light;
+    });
+    this.adaptive = new AdaptiveResolution();
     this.camera = new THREE.PerspectiveCamera(78, 1, 0.06, 1200);
     this.camera.rotation.order = "YXZ";
+    this.playerFrustum = new THREE.Frustum();
+    this.viewProjection = new THREE.Matrix4();
+    this.playerBounds = new THREE.Sphere(new THREE.Vector3(), 2.6);
     this.scene.add(this.camera);
     this.gunCamera = new THREE.PerspectiveCamera(60, 1, 0.025, 10);
     this.gunCamera.layers.set(1);
@@ -55,15 +69,9 @@ export class Renderer {
     this.muzzleLight.position.set(0.1, -0.05, -0.8);
     this.viewScene.add(this.muzzleLight);
     this.viewScene.traverse((o) => o.layers.enable(1));
-    const room = new RoomEnvironment(),
-      pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.environment = pmrem.fromScene(room, 0.04);
-    this.scene.environment = this.viewScene.environment =
-      this.environment.texture;
+    this.restoreEnvironment();
     this.scene.environmentIntensity = 0.35;
     this.viewScene.environmentIntensity = 0.6;
-    room.dispose();
-    pmrem.dispose();
     this.players = new Map();
     this.remoteWeaponActions = new Map();
     this.grenades = new Map();
@@ -71,6 +79,7 @@ export class Renderer {
     this.volumes = new Map();
     this.shake = 0;
     this.effects = [];
+    this.effectPool = new Map();
     this.previews = new Map();
     this.time = 0;
     this.flashUntil = 0;
@@ -83,22 +92,101 @@ export class Renderer {
     this.wasGrounded = true;
     this.throwUntil = 0;
     this.spawnId = 0;
-    this.quality = "high";
-    try {
-      this.quality = localStorage.getItem("crossline-quality") || "high";
-    } catch {}
-    if (!QUALITY[this.quality]) this.quality = "high";
+    this.quality = effectiveQuality(options.quality);
     this.particleGeometry = new THREE.SphereGeometry(0.05, 6, 4);
     this.casingGeometry = new THREE.CylinderGeometry(0.018, 0.018, 0.07, 6);
     this.decalGeometry = new THREE.PlaneGeometry(0.16, 0.16);
     this.setMap("coastline");
     this.onResize = () => this.resize();
     window.addEventListener("resize", this.onResize);
-    this.setQuality(this.quality);
+    this.setQuality(options.quality || "auto");
+  }
+  restoreEnvironment() {
+    this.environment?.dispose();
+    const room = new RoomEnvironment(),
+      pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.environment = pmrem.fromScene(room, 0.04);
+    this.scene.environment = this.viewScene.environment =
+      this.environment.texture;
+    room.dispose();
+    pmrem.dispose();
+  }
+  restoreContext() {
+    this.restoreEnvironment();
+    this.renderer.shadowMap.needsUpdate = true;
+    this.qualityKey = null;
+    this.setQuality(this.options.quality);
+    this.resize();
+  }
+  async warmup(ids = []) {
+    if (this.renderer.getContext().isContextLost())
+      throw Error("WebGL is waiting for graphics-driver recovery");
+    this.warmModels ||= new Map();
+    for (const [key, model] of this.warmModels) {
+      if (
+        (key.startsWith("world/") || key.startsWith("view/")) &&
+        !ids.includes(key.split("/").at(-1))
+      ) {
+        model.removeFromParent();
+        disposeModel(model);
+        this.warmModels.delete(key);
+      }
+    }
+    const world = new THREE.Group(),
+      view = new THREE.Group();
+    const remember = (id, factory, parent) => {
+      if (!this.warmModels.has(id)) this.warmModels.set(id, factory());
+      parent.add(this.warmModels.get(id));
+    };
+    for (const team of ["soldiers", "terrorists"])
+      for (const low of [false, true])
+        remember(`${team}/${low}`, () => makePlayer("", team, low), world);
+    for (const id of ids) {
+      remember(`world/${id}`, () => makeGun(id), world);
+      for (const team of ["soldiers", "terrorists"])
+        remember(`view/${team}/${id}`, () => makeGun(id, true, team), view);
+    }
+    remember("smoke", () => smokeVolume(), world);
+    for (const kind of [
+      "particle",
+      "casing",
+      "smoke",
+      "flare",
+      "line",
+      "decal",
+    ])
+      remember(`effect/${kind}`, () => this.effectMesh(kind), world);
+    this.scene.add(world);
+    this.viewScene.add(view);
+    try {
+      this.camera.updateMatrixWorld();
+      await this.renderer.compileAsync(this.scene, this.camera);
+      await this.renderer.compileAsync(this.viewScene, this.gunCamera);
+      // Upload geometry/textures and initialise shadow variants while loading.
+      this.renderer.shadowMap.needsUpdate = true;
+      this.renderer.render(this.scene, this.camera);
+      this.renderer.render(this.viewScene, this.gunCamera);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      world.removeFromParent();
+      view.removeFromParent();
+    }
+    this.applyTextureQuality();
   }
   resize() {
     const w = innerWidth,
       h = innerHeight;
+    if (this.settings)
+      this.renderer.setPixelRatio(
+        pixelRatio(
+          w,
+          h,
+          devicePixelRatio,
+          this.settings,
+          this.options.resolution ?? 1,
+          this.adaptive.scale,
+        ),
+      );
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -106,7 +194,18 @@ export class Renderer {
     this.gunCamera.updateProjectionMatrix();
   }
   setQuality(preset) {
-    if (!QUALITY[preset]) preset = "high";
+    preset = effectiveQuality(preset);
+    const key = JSON.stringify([
+      preset,
+      this.options.resolution,
+      this.options.shadows,
+      this.options.effects,
+      this.options.textures,
+      this.options.adaptiveResolution,
+    ]);
+    if (key === this.qualityKey) return;
+    this.qualityKey = key;
+    this.adaptive.reset();
     this.quality = preset;
     this.settings = {
       ...QUALITY[preset],
@@ -116,18 +215,17 @@ export class Renderer {
     try {
       localStorage.setItem("crossline-quality", preset);
     } catch {}
-    this.renderer.setPixelRatio(
-      Math.min(devicePixelRatio, this.settings.dpr) *
-        (this.options.resolution ?? 1),
-    );
     this.renderer.shadowMap.enabled =
       !!this.settings.shadow && this.options.shadows !== false;
     this.renderer.shadowMap.needsUpdate = true;
     if (this.world) {
       const s = this.world.sun.shadow;
-      s.map?.dispose();
-      s.map = null;
-      s.mapSize.set(this.settings.shadow || 512, this.settings.shadow || 512);
+      const size = this.settings.shadow || 512;
+      if (s.mapSize.x !== size || !this.renderer.shadowMap.enabled) {
+        s.map?.dispose();
+        s.map = null;
+        s.mapSize.set(size, size);
+      }
     }
     this.resize();
     this.applyTextureQuality();
@@ -153,8 +251,11 @@ export class Renderer {
         m.normalScale.copy(original.normal).multiplyScalar(low ? 0 : 1);
       for (const key of ["map", "normalMap", "roughnessMap", "bumpMap"])
         if (m[key]) {
-          m[key].anisotropy = low ? 1 : 4;
-          m[key].needsUpdate = true;
+          const value = low ? 1 : 4;
+          if (m[key].anisotropy !== value) {
+            m[key].anisotropy = value;
+            m[key].needsUpdate = true;
+          }
         }
     }
   }
@@ -165,6 +266,7 @@ export class Renderer {
     this.world?.dispose();
     this.mapId = id;
     this.world = buildWorld(this.scene, id);
+    this.qualityKey = null;
     if (this.settings) this.setQuality(this.quality);
   }
   clearPlayers() {
@@ -196,6 +298,10 @@ export class Renderer {
     this.volumes.clear();
   }
   clearEffects() {
+    for (const light of this.fxLights || []) {
+      light.intensity = 0;
+      light.userData.until = 0;
+    }
     for (const e of this.effects || []) this.removeEffect(e);
     if (this.effects) this.effects.length = 0;
   }
@@ -251,15 +357,9 @@ export class Renderer {
         this.quality !== "low" &&
         this.options.effects !== false
       ) {
-        const smoke = new THREE.Sprite(
-          new THREE.SpriteMaterial({
-            map: radialTexture("smoke"),
-            color: 0xc2c5bb,
-            transparent: true,
-            opacity: 0.15,
-            depthWrite: false,
-          }),
-        );
+        const smoke = this.effectMesh("smoke");
+        smoke.material.color.setHex(0xc2c5bb);
+        smoke.material.opacity = 0.15;
         this.gun.updateMatrixWorld(true);
         smoke.position.copy(
           this.gun.userData.muzzle.getWorldPosition(new THREE.Vector3()),
@@ -320,12 +420,8 @@ export class Renderer {
         ),
         low = distance > (mesh?.userData.lowDetail ? 20 : 28);
       if (mesh && mesh.userData.lowDetail !== low) {
-        mesh.removeFromParent();
-        mesh.userData.labelTexture.dispose();
-        mesh.userData.label.material.dispose();
-        disposeModel(mesh);
-        this.players.delete(p.id);
-        mesh = null;
+        if (setCharacterDetail(mesh, TEAMS[p.team].model + (low ? "-lod" : "")))
+          mesh.userData.lowDetail = low;
       }
       if (!mesh) {
         mesh = makePlayer(p.name, p.team, low);
@@ -440,22 +536,79 @@ export class Renderer {
     (extra.view ? this.viewScene : this.scene).add(mesh);
     this.effects.push({ mesh, life, max: life, ...extra });
   }
+  effectMesh(kind) {
+    let mesh = this.effectPool.get(kind)?.pop();
+    if (!mesh) {
+      if (kind === "particle")
+        mesh = new THREE.Mesh(
+          this.particleGeometry,
+          new THREE.MeshBasicMaterial({ transparent: true }),
+        );
+      if (kind === "casing")
+        mesh = new THREE.Mesh(this.casingGeometry, material(0xb8a05f, 0.8));
+      if (kind === "line")
+        mesh = new THREE.Line(
+          new THREE.BufferGeometry().setAttribute(
+            "position",
+            new THREE.Float32BufferAttribute(new Float32Array(6), 3),
+          ),
+          new THREE.LineBasicMaterial({ color: 0xffd4a0, transparent: true }),
+        );
+      if (kind === "decal")
+        mesh = new THREE.Mesh(
+          this.decalGeometry,
+          new THREE.MeshBasicMaterial({
+            map: radialTexture("impact"),
+            transparent: true,
+            depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -2,
+          }),
+        );
+      if (kind === "smoke" || kind === "flare")
+        mesh = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: radialTexture(kind === "smoke" ? "smoke" : "flash"),
+            transparent: true,
+            depthWrite: false,
+            blending:
+              kind === "flare" ? THREE.AdditiveBlending : THREE.NormalBlending,
+          }),
+        );
+      mesh.userData.effectKind = kind;
+    }
+    mesh.position.set(0, 0, 0);
+    mesh.rotation.set(0, 0, 0);
+    mesh.scale.setScalar(1);
+    mesh.layers.set(0);
+    mesh.visible = true;
+    mesh.material.opacity = 1;
+    return mesh;
+  }
   removeEffect(e) {
     e.mesh.removeFromParent();
+    const kind = e.mesh.userData.effectKind;
+    if (kind) {
+      if (!this.effectPool.has(kind)) this.effectPool.set(kind, []);
+      const pool = this.effectPool.get(kind);
+      if (
+        pool.length < (kind === "particle" ? 64 : kind === "decal" ? 40 : 24)
+      ) {
+        pool.push(e.mesh);
+        return;
+      }
+      if (kind === "line") e.mesh.geometry.dispose();
+      if (kind !== "casing") e.mesh.material.dispose();
+      return;
+    }
     if (e.dispose) e.mesh.geometry.dispose();
     if (!e.sharedMaterial) e.mesh.material?.dispose();
   }
   smoke(pos, size = 0.2, life = 0.7) {
     if (this.quality === "low" || this.options.effects === false) return;
-    const mesh = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: radialTexture("smoke"),
-        color: 0xaaa99d,
-        transparent: true,
-        opacity: 0.25,
-        depthWrite: false,
-      }),
-    );
+    const mesh = this.effectMesh("smoke");
+    mesh.material.color.setHex(0xaaa99d);
+    mesh.material.opacity = 0.25;
     mesh.position.set(pos.x, pos.y, pos.z);
     mesh.scale.setScalar(size);
     this.addEffect(mesh, life, {
@@ -466,7 +619,7 @@ export class Renderer {
   }
   casing(pos, yaw) {
     if (this.options.effects === false) return;
-    const mesh = new THREE.Mesh(this.casingGeometry, material(0xb8a05f, 0.8));
+    const mesh = this.effectMesh("casing");
     mesh.position.copy(pos);
     mesh.rotation.set(1, 1, 1);
     this.addEffect(mesh, 1.1, {
@@ -516,30 +669,16 @@ export class Renderer {
       }
       if (mesh) mesh.userData.flashAt = this.time + 0.08;
       for (const end of event.ends) {
-        const geometry = new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(event.origin.x, event.origin.y, event.origin.z),
-          new THREE.Vector3(end.x, end.y, end.z),
-        ]);
-        const line = new THREE.Line(
-          geometry,
-          new THREE.LineBasicMaterial({
-            color: 0xffd4a0,
-            transparent: true,
-            opacity: 0.4,
-          }),
-        );
-        this.addEffect(line, 0.045, { dispose: true });
+        const line = this.effectMesh("line"),
+          positions = line.geometry.attributes.position;
+        positions.setXYZ(0, event.origin.x, event.origin.y, event.origin.z);
+        positions.setXYZ(1, end.x, end.y, end.z);
+        positions.needsUpdate = true;
+        line.geometry.computeBoundingSphere();
+        line.material.opacity = 0.4;
+        this.addEffect(line, 0.045);
         if (end.normal) {
-          const decal = new THREE.Mesh(
-            this.decalGeometry,
-            new THREE.MeshBasicMaterial({
-              map: radialTexture("impact"),
-              transparent: true,
-              depthWrite: false,
-              polygonOffset: true,
-              polygonOffsetFactor: -2,
-            }),
-          );
+          const decal = this.effectMesh("decal");
           const n = new THREE.Vector3(end.normal.x, end.normal.y, end.normal.z);
           decal.position.set(end.x, end.y, end.z).addScaledVector(n, 0.015);
           decal.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
@@ -573,9 +712,7 @@ export class Renderer {
       }
     }
     if (event.type === "flashbang") {
-      const light = new THREE.PointLight(0xecf6ff, 35, 10);
-      light.position.set(event.x, event.y, event.z);
-      this.addEffect(light, 0.16, { lightIntensity: 35 });
+      this.lightFlash(event, 0xecf6ff, 35, 10, 0.16);
       for (let i = 0; i < 7; i++) this.particle(event, 0xe4e7d8, 0.2, 2);
     }
     if (event.type === "explosion" || event.type === "bombExplosion") {
@@ -609,28 +746,36 @@ export class Renderer {
           2 * power,
           2.3,
         );
-      const flare = new THREE.Sprite(
-        new THREE.SpriteMaterial({
-          map: radialTexture("flash"),
-          color: 0xffb564,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        }),
-      );
+      const flare = this.effectMesh("flare");
+      flare.material.color.setHex(0xffb564);
       flare.position.set(event.x, event.y + 0.3, event.z);
       flare.scale.setScalar(3.6 * power);
       this.addEffect(flare, 0.22);
-      const light = new THREE.PointLight(0xffa533, 45 * power, 12 * power);
-      light.position.set(event.x, event.y + 0.5, event.z);
-      this.addEffect(light, 0.25, { lightIntensity: 45 * power });
+      this.lightFlash(event, 0xffa533, 45 * power, 12 * power, 0.25);
     }
+  }
+  lightFlash(position, color, intensity, distance, life) {
+    const light = this.fxLights.reduce((a, b) =>
+      a.userData.until < b.userData.until ? a : b,
+    );
+    light.position.set(position.x, position.y + 0.3, position.z);
+    light.color.setHex(color);
+    light.distance = distance;
+    light.intensity = intensity;
+    Object.assign(light.userData, { until: this.time + life, intensity, life });
+  }
+  sampleFrame(ms) {
+    if (
+      this.options.adaptiveResolution !== false &&
+      !document.hidden &&
+      this.adaptive.sample(ms, 1000 / Math.min(60, this.options.fpsLimit || 60))
+    )
+      this.resize();
   }
   particle(pos, color, life, speed) {
     if (this.options.effects === false) return;
-    const mesh = new THREE.Mesh(
-      this.particleGeometry,
-      new THREE.MeshBasicMaterial({ color, transparent: true }),
-    );
+    const mesh = this.effectMesh("particle");
+    mesh.material.color.setHex(color);
     mesh.position.set(pos.x, pos.y, pos.z);
     mesh.scale.setScalar(speed > 2 ? 1 + Math.random() * 4 : 0.6);
     this.addEffect(mesh, life, {
@@ -645,10 +790,14 @@ export class Renderer {
     this.renderer.info.reset();
     this.time += dt;
     const t = this.time;
+    for (const light of this.fxLights)
+      light.intensity =
+        light.userData.intensity *
+          Math.max(0, (light.userData.until - t) / light.userData.life) || 0;
     this.world.update(t);
     if (t >= this.nextShadow) {
       this.renderer.shadowMap.needsUpdate = true;
-      this.nextShadow = t + 0.1;
+      this.nextShadow = t + (this.quality === "ultra" ? 0.1 : 0.2);
     }
     this.shake *= Math.exp(-9 * dt);
     this.kick *= Math.exp(-17 * dt);
@@ -698,8 +847,10 @@ export class Renderer {
         aim && local.hp > 0
           ? WEAPONS[local.weapon].aimFov
           : this.options.fov || 78;
-      this.camera.fov += (fov - this.camera.fov) * Math.min(1, dt * 14);
-      this.camera.updateProjectionMatrix();
+      if (Math.abs(fov - this.camera.fov) > 0.01) {
+        this.camera.fov += (fov - this.camera.fov) * Math.min(1, dt * 14);
+        this.camera.updateProjectionMatrix();
+      }
       const throwing = this.throwUntil > t,
         visualWeapon = throwing ? this.throwWeapon : local.weapon,
         pose = weaponPose(visualWeapon),
@@ -773,6 +924,13 @@ export class Renderer {
         }
       }
     } else this.menuCamera();
+    this.camera.updateMatrixWorld();
+    this.playerFrustum.setFromProjectionMatrix(
+      this.viewProjection.multiplyMatrices(
+        this.camera.projectionMatrix,
+        this.camera.matrixWorldInverse,
+      ),
+    );
     for (const m of this.players.values()) {
       const u = m.userData,
         p = u.state;
@@ -794,9 +952,17 @@ export class Renderer {
           : p.action === "throw"
             ? { ...p, action: "idle" }
             : p;
-      animatePlayer(m, poseState, t, dt);
-      // Distant opponents retain their silhouette; only their costly tiny gear is culled.
       const distance = m.position.distanceTo(this.camera.position);
+      // Root interpolation remains full rate; distant skeletal detail runs at
+      // 20 Hz and catches up on its next pose update, without recreating rigs.
+      u.poseElapsed = (u.poseElapsed || 0) + dt;
+      this.playerBounds.center.copy(m.position).y += 1;
+      const inView = this.playerFrustum.intersectsSphere(this.playerBounds);
+      if ((inView && distance < 20) || u.poseElapsed >= (inView ? 0.05 : 0.2)) {
+        animatePlayer(m, poseState, t, u.poseElapsed);
+        u.poseElapsed = 0;
+      }
+      // Distant opponents retain their silhouette; only their costly tiny gear is culled.
       for (const part of u.lodMeshes)
         part.geometry =
           distance > (this.quality === "low" ? 10 : 24)
@@ -815,9 +981,11 @@ export class Renderer {
       m.rotation.x += dt * 6 * u.spin;
       m.rotation.z += dt * 3 * u.spin;
     }
-    for (const detail of this.world.details.children) {
-      const d = detail.position.distanceTo(this.camera.position);
-      detail.visible = d < this.settings.detail + (playing ? 0 : 40);
+    for (const { mesh, bounds } of this.world.decorative) {
+      const distance =
+        bounds.center.distanceTo(this.camera.position) - bounds.radius;
+      mesh.visible = distance < this.settings.detail + (playing ? 0 : 60);
+      mesh.castShadow = distance < Math.min(this.settings.detail, 28);
     }
     for (let i = this.effects.length - 1; i >= 0; i--) {
       const e = this.effects[i];

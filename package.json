@@ -12,6 +12,7 @@
     "assets:characters": "node tools/build-characters.js --install",
     "test:characters": "node tests/characters.js",
     "test:browser": "node tests/browser.js",
+    "test:performance": "node tests/performance-browser.js",
     "test:home": "node tests/homepage.js",
     "test:visual": "node tests/visuals.js",
     "test:first-person": "node tests/first-person.js"

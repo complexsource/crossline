@@ -12,6 +12,27 @@ export const MATCH_SECONDS = 600;
 // Original map geometry. The server and renderer share every solid collider.
 export const BOXES = getMap("coastline").boxes;
 export const SPAWNS = getMap("coastline").spawns;
+// Static broadphase shared by prediction and authority. Each 4 m cell includes
+// a 1 m apron for swept movement; custom/mutable test maps use the exact scan.
+const collisionCells = new Map();
+export function collisionCandidates(x, z, boxes = BOXES) {
+  if (boxes !== BOXES) return boxes;
+  const cx = Math.floor(x / 4),
+    cz = Math.floor(z / 4),
+    key = `${cx}/${cz}`;
+  if (!collisionCells.has(key))
+    collisionCells.set(
+      key,
+      boxes.filter(
+        (b) =>
+          b.x + b.w / 2 >= cx * 4 - 1 &&
+          b.x - b.w / 2 <= cx * 4 + 5 &&
+          b.z + b.d / 2 >= cz * 4 - 1 &&
+          b.z - b.d / 2 <= cz * 4 + 5,
+      ),
+    );
+  return collisionCells.get(key);
+}
 export const eyeHeight = (p) => (p.crouch ? 1.03 : 1.62);
 export const playerHeight = (p) => (p.crouch ? 1.25 : 1.85);
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -33,6 +54,8 @@ export function overlaps(p, box, h = playerHeight(p)) {
   );
 }
 export function move(p, input, dt, boxes = BOXES) {
+  if (Math.max(7.5, Math.abs(p.vx), Math.abs(p.vz)) * dt < 0.65)
+    boxes = collisionCandidates(p.x, p.z, boxes);
   const wasGrounded = p.grounded;
   p.yaw = input.yaw;
   p.pitch = input.pitch;
@@ -60,9 +83,10 @@ export function move(p, input, dt, boxes = BOXES) {
   for (const axis of ["x", "z"]) {
     const old = p[axis];
     p[axis] += p[axis === "x" ? "vx" : "vz"] * dt;
-    const blocked = boxes.filter((b) => overlaps(p, b));
-    if (blocked.length) {
-      const top = Math.max(...blocked.map((b) => b.y + b.h / 2));
+    let top = -Infinity;
+    for (const b of boxes)
+      if (overlaps(p, b)) top = Math.max(top, b.y + b.h / 2);
+    if (top !== -Infinity) {
       const step = { ...p, y: top };
       if (
         wasGrounded &&
@@ -100,11 +124,9 @@ export function move(p, input, dt, boxes = BOXES) {
 export function rayBox(o, d, b) {
   let near = 0,
     far = Infinity;
-  for (const [axis, size] of [
-    ["x", "w"],
-    ["y", "h"],
-    ["z", "d"],
-  ]) {
+  for (let index = 0; index < 3; index++) {
+    const axis = index === 0 ? "x" : index === 1 ? "y" : "z",
+      size = index === 0 ? "w" : index === 1 ? "h" : "d";
     const min = b[axis] - b[size] / 2,
       max = b[axis] + b[size] / 2;
     if (Math.abs(d[axis]) < 1e-8) {
@@ -121,10 +143,9 @@ export function rayBox(o, d, b) {
   return near;
 }
 export function wallDistance(o, d, boxes = BOXES) {
-  return Math.min(
-    d.y < 0 ? (-1.3 - o.y) / d.y : Infinity,
-    ...boxes.map((b) => rayBox(o, d, b)),
-  );
+  let distance = d.y < 0 ? (-1.3 - o.y) / d.y : Infinity;
+  for (const box of boxes) distance = Math.min(distance, rayBox(o, d, box));
+  return distance;
 }
 export function emptyInput() {
   return {

@@ -2097,3 +2097,24 @@ dialog.modal::backdrop {
     font-size: 10px;
   }
 }
+#graphics-recovery {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #06141dee;
+  color: #f4f5ef;
+}
+#graphics-recovery > div {
+  width: min(520px, 100%);
+  padding: 32px;
+}
+#graphics-recovery p {
+  line-height: 1.6;
+}
+#graphics-recovery button {
+  width: 100%;
+  margin: 12px 0;
+}

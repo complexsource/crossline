@@ -82,6 +82,7 @@ The normal server appends **one JSON object per finished match** to `data/matche
 npm test
 npm run build
 npm run test:browser
+npm run test:performance
 npm run test:home
 npm run test:characters
 npm run test:visual
@@ -90,6 +91,12 @@ BENCHMARK=1 npm run test:visual
 ```
 
 Browser/visual tests require installed Google Chrome. They launch isolated headless profiles and servers, not your existing browser or live rooms. Screenshots and benchmark JSON go to ignored `test-results/`; see `test-results/benchmark.json` for the latest local measurement after running the benchmark. A local sample is not a low-end hardware or internet-latency guarantee.
+
+The September performance pass adds Auto/adaptive rendering, graphics recovery,
+staged room assets, effect pooling and compact snapshots. See
+[PERFORMANCE.md](PERFORMANCE.md) for measured results, limitations and the
+Windows/integrated-GPU retest checklist. Its isolated stress/recovery test writes
+`test-results/performance.json`.
 
 The first-person sweep renders all 39 weapon/equipment models at rest and firearms at two reload phases (107 views). It checks finite transforms, hand creation and that exposed palm/finger vertices do not cross the camera near plane in those samples, and saves review screenshots. Forearms deliberately continue outside the frame. It does not prove perfect anatomical contact or the absence of clipping at every frame/FOV. For a targeted review, use `WEAPONS=glock18,r8,dualberettas npm run test:first-person`.
 

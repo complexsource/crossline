@@ -72,7 +72,34 @@ try {
   await a.screenshot({ path: "test-results/loading.png" });
   await a.locator("#enter").waitFor({ timeout: 90000 });
   await b.locator("#enter").waitFor({ timeout: 90000 });
-  assert.ok(heavy.length > 30);
+  const loadedModels = heavy
+    .filter((url) => url.endsWith(".glb"))
+    .map((url) => url.split("/").pop());
+  for (const id of [
+    "soldier",
+    "terrorist",
+    "soldier-lod",
+    "terrorist-lod",
+    "m4a4",
+    "awp",
+    "usps",
+    "knife",
+    "he",
+    "flash",
+    "smoke",
+  ])
+    assert.ok(
+      loadedModels.includes(`${id}.glb`),
+      `match asset ${id} was loaded`,
+    );
+  assert.ok(
+    !loadedModels.includes("negev.glb") && !loadedModels.includes("bomb.glb"),
+    "unused loadouts/equipment are not downloaded",
+  );
+  assert.ok(
+    loadedModels.length < 18,
+    "room loads a subset, not the full arsenal",
+  );
   const room = server.game.rooms.get(code),
     pa = [...room.players.values()].find((p) => p.name === "Alpha"),
     pb = [...room.players.values()].find((p) => p.name === "Bravo");
@@ -257,6 +284,20 @@ try {
   await a.locator("#copy").waitFor();
   assert.equal(room.players.size, 2);
   assert.equal(room.code, code);
+  // A new loadout in the same room must load on demand after the first match.
+  await a.locator("#primary").selectOption("negev");
+  await a.locator("#ready").click();
+  await b.locator("#ready").click();
+  await a.locator("#start").click();
+  await a.locator("#enter").waitFor({ timeout: 45000 });
+  await a.waitForFunction(
+    () => document.querySelector("#weapon-name").textContent === "NEGEV",
+  );
+  assert.ok(heavy.some((url) => url.endsWith("/negev.glb")));
+  assert.equal(room.code, code);
+  room.endsAt = server.game.now() - 0.1;
+  await a.locator("#back").click();
+  await a.locator("#copy").waitFor();
   await ctx1.close();
   await b.waitForFunction(() =>
     document.querySelector(".host-name")?.textContent.includes("Bravo"),
