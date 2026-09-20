@@ -6,6 +6,7 @@ import path from "node:path";
 import { appendFile, mkdir } from "node:fs/promises";
 import { Game } from "./game.js";
 import { packSnapshot } from "../shared/snapshot.js";
+import { getBotNavigation } from "./bot-navigation.js";
 
 export async function createGameServer({
   production = false,
@@ -16,6 +17,9 @@ export async function createGameServer({
   countdown = 3,
   statsDirectory = null,
 } = {}) {
+  // Prepare shared static routes before accepting connections. Adding the first
+  // bot must not stall another room that is already playing.
+  getBotNavigation();
   const app = express(),
     http = createServer(app);
   const io = new Server(http, {
@@ -97,6 +101,9 @@ export async function createGameServer({
     });
     handle("choose", (data) => game.choose(socket.id, data));
     handle("configure", (data) => game.configure(socket.id, data));
+    handle("addBot", (data) => game.addBot(socket.id, data));
+    handle("configureBot", (data) => game.configureBot(socket.id, data));
+    handle("removeBot", (data) => game.removeBot(socket.id, data));
     handle("start", () => game.start(socket.id));
     handle("loaded", (data) => game.loaded(socket.id, data?.epoch));
     handle("return", () => game.returnRoom(socket.id));

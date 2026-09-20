@@ -37,6 +37,8 @@ const fields = [
   "actionState",
   "action",
   "actionTime",
+  "bot",
+  "difficulty",
 ];
 const rounded = new Set([
   "x",

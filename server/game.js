@@ -7,6 +7,9 @@ import {
   GRENADE_THROW_SECONDS,
 } from "../shared/actions.js";
 import { chooseSpawn } from "./spawns.js";
+import { BOT_NAMES, BOT_DIFFICULTIES } from "../shared/bots.js";
+import { getBotNavigation } from "./bot-navigation.js";
+import { resetBot, updateBot } from "./bots.js";
 import { getMap, validMap, groundAt } from "../shared/maps.js";
 import {
   WEAPONS,
@@ -89,6 +92,8 @@ export class Game {
       players: [...r.players.values()].map((p) => ({
         id: p.id,
         name: p.name,
+        bot: p.bot,
+        difficulty: p.difficulty,
         team: p.team,
         primary: p.primary,
         secondary: p.secondary,
@@ -160,6 +165,8 @@ export class Game {
     r.players.set(id, {
       id,
       name,
+      bot: false,
+      difficulty: null,
       team,
       primary: TEAMS[team].primary,
       secondary: TEAMS[team].secondary,
@@ -197,6 +204,69 @@ export class Game {
     p.ready = ready ?? false;
     this.broadcast(r);
   }
+  botLobby(id) {
+    const r = this.roomOf(id);
+    if (!r || r.host !== id || this.player(id)?.bot || r.state !== "lobby")
+      throw Error("Only the human host can manage bots in the waiting room.");
+    return r;
+  }
+  addBot(id, { difficulty = "normal", team = "auto" } = {}) {
+    const r = this.botLobby(id);
+    if (
+      typeof difficulty !== "string" ||
+      !Object.hasOwn(BOT_DIFFICULTIES, difficulty) ||
+      !["auto", ...TEAM_IDS].includes(team)
+    )
+      throw Error("Choose Easy, Normal or Hard and a valid team.");
+    if (r.players.size >= r.playerLimit)
+      throw Error("This room is full. Remove a bot to make space.");
+    const used = new Set(
+      [...r.players.values()].filter((p) => p.bot).map((p) => p.botIndex),
+    );
+    const index = BOT_NAMES.findIndex((_, i) => !used.has(i));
+    if (index < 0)
+      throw Error("At least one slot is reserved for a human player.");
+    getBotNavigation(); // Cached at server startup; standalone Game users initialize in the lobby.
+    const botId = `bot-${randomBytes(8).toString("hex")}`;
+    this.enter(botId, `[BOT] ${BOT_NAMES[index]}`, r.code);
+    const p = r.players.get(botId);
+    if (team !== "auto") p.team = team;
+    Object.assign(p, {
+      bot: true,
+      botIndex: index,
+      difficulty,
+      ready: true,
+      loaded: true,
+      primary: TEAMS[p.team].primary,
+      secondary: TEAMS[p.team].secondary,
+    });
+    this.broadcast(r);
+    return { id: botId };
+  }
+  configureBot(id, { botId, difficulty, team } = {}) {
+    const r = this.botLobby(id),
+      p = r.players.get(botId);
+    if (!p?.bot) throw Error("Bot not found in this room.");
+    if (
+      (difficulty !== undefined &&
+        (typeof difficulty !== "string" ||
+          !Object.hasOwn(BOT_DIFFICULTIES, difficulty))) ||
+      (team !== undefined && !TEAM_IDS.includes(team))
+    )
+      throw Error("Invalid bot settings.");
+    if (difficulty !== undefined) p.difficulty = difficulty;
+    if (team !== undefined) {
+      p.team = team;
+      p.primary = TEAMS[team].primary;
+      p.secondary = TEAMS[team].secondary;
+    }
+    this.broadcast(r);
+  }
+  removeBot(id, { botId } = {}) {
+    const r = this.botLobby(id);
+    if (!r.players.get(botId)?.bot) throw Error("Bot not found in this room.");
+    this.leave(botId);
+  }
   configure(id, options = {}) {
     const r = this.roomOf(id);
     if (!r || r.host !== id || r.state !== "lobby")
@@ -218,7 +288,7 @@ export class Game {
     if (!r || r.host !== id) throw Error("Only the host can start.");
     if (!["lobby", "results"].includes(r.state))
       throw Error("The match is already starting or running.");
-    if (r.players.size < 2) throw Error("Invite at least one friend.");
+    if (r.players.size < 2) throw Error("Invite a friend or add a bot.");
     if (r.state === "lobby" && [...r.players.values()].some((p) => !p.ready))
       throw Error("Every player must be ready.");
     const teams = () =>
@@ -226,7 +296,12 @@ export class Game {
     let t = teams();
     while (Math.abs(t[0].length - t[1].length) > 1) {
       const big = t[0].length > t[1].length ? 0 : 1;
-      t[big].at(-1).team = TEAM_IDS[1 - big];
+      const p = t[big].find((p) => p.bot) || t[big].at(-1);
+      p.team = TEAM_IDS[1 - big];
+      if (p.bot) {
+        p.primary = TEAMS[p.team].primary;
+        p.secondary = TEAMS[p.team].secondary;
+      }
       t = teams();
     }
     r.results = null;
@@ -239,7 +314,7 @@ export class Game {
     r.state = "loading";
     r.loadingDeadline = this.now() + 120;
     for (const p of r.players.values()) {
-      p.loaded = false;
+      p.loaded = !!p.bot;
       p.kills = p.deaths = p.headshots = p.damage = 0;
     }
     if (!this.loadHandshake) {
@@ -273,7 +348,7 @@ export class Game {
     r.state = "lobby";
     r.drops = [];
     r.smokes = [];
-    for (const p of r.players.values()) p.ready = false;
+    for (const p of r.players.values()) p.ready = !!p.bot;
     this.broadcast(r);
   }
   leave(id) {
@@ -283,11 +358,17 @@ export class Game {
     if (r.state === "playing" && p.hp > 0) drop(r, p, this.now());
     r.players.delete(id);
     this.members.delete(id);
-    if (!r.players.size) {
+    const humans = [...r.players.values()].filter((p) => !p.bot);
+    if (!humans.length) {
+      for (const bot of r.players.values()) this.members.delete(bot.id);
+      r.players.clear();
+      r.grenades = [];
+      r.smokes = [];
+      r.drops = [];
       this.rooms.delete(r.code);
       return;
     }
-    if (r.host === id) r.host = r.players.keys().next().value;
+    if (r.host === id) r.host = humans[0].id;
     if (
       r.state === "playing" &&
       !TEAM_IDS.every((t) => [...r.players.values()].some((p) => p.team === t))
@@ -297,7 +378,7 @@ export class Game {
       if (r.players.size < 2) {
         r.state = "lobby";
         r.notice = "Not enough players to start.";
-        for (const p of r.players.values()) p.ready = false;
+        for (const p of r.players.values()) p.ready = !!p.bot;
       } else if (
         r.state === "loading" &&
         [...r.players.values()].every((p) => p.loaded)
@@ -342,6 +423,7 @@ export class Game {
     });
     resetInventory(p);
     p.spawnId++;
+    if (p.bot) resetBot(p, this.now());
   }
   input(id, data) {
     const p = this.player(id),
@@ -721,7 +803,7 @@ export class Game {
         r.state = "lobby";
         r.notice =
           "Loading timed out. Check your connection and ready up again.";
-        for (const p of r.players.values()) p.ready = false;
+        for (const p of r.players.values()) p.ready = !!p.bot;
         this.broadcast(r);
       }
       if (r.state === "countdown" && now >= r.beginsAt) this.begin(r);
@@ -735,6 +817,7 @@ export class Game {
           if (now >= p.respawnAt) this.spawn(r, p);
           continue;
         }
+        if (p.bot) updateBot(this, r, p, now);
         if (now - p.lastInput > 0.25)
           p.input = { ...emptyInput(), yaw: p.yaw, pitch: p.pitch };
         move(p, p.input, TICK, getMap(r.mapId).boxes);
@@ -864,6 +947,8 @@ export class Game {
       players: [...r.players.values()].map((p) => ({
         id: p.id,
         name: p.name,
+        bot: p.bot,
+        difficulty: p.difficulty,
         team: p.team,
         x: p.x,
         y: p.y,
@@ -925,6 +1010,8 @@ export class Game {
         .map((p) => ({
           id: p.id,
           name: p.name,
+          bot: p.bot,
+          difficulty: p.difficulty,
           team: p.team,
           kills: p.kills,
           deaths: p.deaths,

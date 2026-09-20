@@ -26,6 +26,7 @@ import { openDialog } from "./dialog.js";
 import { GraphicsRecovery } from "./graphics-recovery.js";
 import { effectiveQuality } from "./performance.js";
 import { unpackSnapshot } from "../shared/snapshot.js";
+import { BOT_DIFFICULTIES } from "../shared/bots.js";
 import "./style.css";
 
 const app = document.querySelector("#app"),
@@ -145,6 +146,69 @@ function call(event, data = {}) {
   );
 }
 const k = (action) => keyLabel(settings.bindings[action]);
+const botDefaults = { difficulty: "normal", team: "auto" };
+function botPanel(host, inLobby) {
+  const bots = room.players.filter((p) => p.bot),
+    panel = document.createElement("section"),
+    maxBots = room.playerLimit - room.players.filter((p) => !p.bot).length;
+  panel.className = "bot-panel panel";
+  const difficulties = (selected) =>
+    Object.entries(BOT_DIFFICULTIES)
+      .map(
+        ([id, value]) =>
+          `<option value="${id}" ${id === selected ? "selected" : ""}>${value.label}</option>`,
+      )
+      .join("");
+  const teams = (selected) =>
+    TEAM_IDS.map(
+      (id) =>
+        `<option value="${id}" ${id === selected ? "selected" : ""}>${TEAMS[id].name}</option>`,
+    ).join("");
+  panel.innerHTML = `<div class="bot-heading"><div><div class="eyebrow">SQUAD SUPPORT</div><h3>BOT PLAYERS</h3></div><span>${bots.length} / ${maxBots} BOTS</span></div>
+    <p class="muted">Play solo or fill empty slots with server-controlled teammates and opponents. Bots use the same health, weapons and respawn rules.</p>
+    ${host && inLobby ? `<div class="bot-add"><label>DIFFICULTY<select id="bot-difficulty">${difficulties(botDefaults.difficulty)}</select></label><label>TEAM<select id="bot-team"><option value="auto" ${botDefaults.team === "auto" ? "selected" : ""}>AUTO BALANCE</option>${teams(botDefaults.team)}</select></label><button id="add-bot" ${room.players.length >= room.playerLimit ? "disabled" : ""}>＋ ADD BOT</button></div>` : `<p class="muted">${inLobby ? "Only the host can add, remove or configure bots." : "Return to the waiting room to manage bots."}</p>`}
+    <div class="bot-list">${bots.map((p) => `<div class="bot-row" data-bot-id="${esc(p.id)}"><b>${esc(p.name)}</b>${host && inLobby ? `<select data-bot-difficulty="${esc(p.id)}" aria-label="Difficulty for ${esc(p.name)}">${difficulties(p.difficulty)}</select><select data-bot-team="${esc(p.id)}" aria-label="Team for ${esc(p.name)}">${teams(p.team)}</select><button data-remove-bot="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">REMOVE</button>` : `<span>${esc(BOT_DIFFICULTIES[p.difficulty]?.label)}</span><span>${TEAMS[p.team].name}</span>`}</div>`).join("")}</div>
+    <p class="bot-note muted">Easy: relaxed aim · Normal: cover and teamwork · Hard: faster reactions and tactical grenades.</p>
+    <p class="bot-note muted">${room.players.length >= room.playerLimit ? "Room full. Remove a bot to make room for a friend. " : ""}Bots count toward this room’s ${room.playerLimit}-player limit. Start with 1–2 bots on slower computers.</p>`;
+  panel.querySelector("#bot-difficulty")?.addEventListener("change", (e) => {
+    botDefaults.difficulty = e.target.value;
+  });
+  panel.querySelector("#bot-team")?.addEventListener("change", (e) => {
+    botDefaults.team = e.target.value;
+  });
+  panel.querySelector("#add-bot")?.addEventListener("click", async (e) => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    const result = await call("addBot", { ...botDefaults });
+    if (!result) button.disabled = room.players.length >= room.playerLimit;
+  });
+  panel
+    .querySelectorAll("[data-bot-difficulty]")
+    .forEach(
+      (el) =>
+        (el.onchange = () =>
+          call("configureBot", {
+            botId: el.dataset.botDifficulty,
+            difficulty: el.value,
+          })),
+    );
+  panel
+    .querySelectorAll("[data-bot-team]")
+    .forEach(
+      (el) =>
+        (el.onchange = () =>
+          call("configureBot", { botId: el.dataset.botTeam, team: el.value })),
+    );
+  panel.querySelectorAll("[data-remove-bot]").forEach(
+    (el) =>
+      (el.onclick = async () => {
+        el.disabled = true;
+        if (!(await call("removeBot", { botId: el.dataset.removeBot })))
+          el.disabled = false;
+      }),
+  );
+  return panel;
+}
 function updateMarkup(selector, html) {
   const element = $(selector);
   if (element && element._lastMarkup !== html) {
@@ -268,6 +332,7 @@ function showRoom() {
       (b) => (b.onclick = () => call("choose", { team: b.dataset.team })),
     );
   $("#primary").onchange = (e) => call("choose", { primary: e.target.value });
+  $(".loadout").after(botPanel(host, inLobby));
   $("#secondary").onchange = (e) =>
     call("choose", { secondary: e.target.value });
   $("#ready").onclick = () => call("choose", { ready: !self.ready });

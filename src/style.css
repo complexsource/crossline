@@ -2118,3 +2118,83 @@ dialog.modal::backdrop {
   width: 100%;
   margin: 12px 0;
 }
+.bot-panel {
+  margin-top: 16px;
+  padding: 22px;
+}
+.bot-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.bot-heading h3 {
+  margin: 6px 0;
+}
+.bot-heading > span {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #a6b9b9;
+}
+.bot-panel > p {
+  line-height: 1.6;
+  font-size: 12px;
+}
+.bot-add {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: end;
+  gap: 12px;
+  margin: 20px 0;
+}
+.bot-add label {
+  display: grid;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+.bot-add select,
+.bot-row select {
+  width: 100%;
+  min-width: 0;
+}
+.bot-list {
+  display: grid;
+  gap: 8px;
+}
+.bot-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(90px, 0.7fr) minmax(
+      110px,
+      1fr
+    ) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid #ffffff14;
+}
+.bot-row b,
+.bot-row > span {
+  font-size: 12px;
+}
+.bot-row button {
+  font-size: 10px;
+  color: #ecb398;
+}
+.bot-note {
+  margin-bottom: 0;
+}
+@media (max-width: 650px) {
+  .bot-add {
+    grid-template-columns: 1fr 1fr;
+  }
+  .bot-add button {
+    grid-column: 1 / -1;
+  }
+  .bot-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .bot-row b {
+    grid-column: 1 / -1;
+  }
+}

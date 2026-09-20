@@ -90,6 +90,8 @@ test("static collision broadphase matches full scans exactly across random movem
 test("wire snapshots preserve authority fields without depending on previous packets", () => {
   const p = {
     id: "abc",
+    bot: false,
+    difficulty: null,
     name: "Player",
     team: "soldiers",
     x: 1.23456,
