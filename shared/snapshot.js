@@ -39,6 +39,8 @@ const fields = [
   "actionTime",
   "bot",
   "difficulty",
+  "buyRemaining",
+  "previousLoadout",
 ];
 const rounded = new Set([
   "x",
@@ -50,6 +52,7 @@ const rounded = new Set([
   "reload",
   "respawn",
   "actionTime",
+  "buyRemaining",
 ]);
 export function packSnapshot(state) {
   return {

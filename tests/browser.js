@@ -5,7 +5,11 @@ import { createGameServer } from "../server/index.js";
 import { emptyInput } from "../shared/game.js";
 
 // Independent production server: never alter a user's live room.
-const server = await createGameServer({ production: true, countdown: 0.3 });
+const server = await createGameServer({
+  production: true,
+  countdown: 0.3,
+  openingBuySeconds: 0,
+});
 await new Promise((resolve) => server.http.listen(0, "127.0.0.1", resolve));
 const url = `http://127.0.0.1:${server.http.address().port}`;
 const browser = await chromium.launch({
@@ -61,8 +65,7 @@ try {
   await b.locator("#join").click();
   await b.locator("#ready").waitFor();
   await b.locator('[data-team="soldiers"]').click();
-  await b.locator("#primary").selectOption("awp");
-  await a.locator("#primary").selectOption("m4a4");
+  assert.equal(await a.locator("#primary, #secondary").count(), 0);
   await b.locator("#ready").click();
   await a.locator("#ready").click();
   await a.waitForFunction(() => !document.querySelector("#start").disabled);
@@ -81,7 +84,8 @@ try {
     "soldier-lod",
     "terrorist-lod",
     "m4a4",
-    "awp",
+    "ak47",
+    "glock18",
     "usps",
     "knife",
     "he",
@@ -285,11 +289,14 @@ try {
   assert.equal(room.players.size, 2);
   assert.equal(room.code, code);
   // A new loadout in the same room must load on demand after the first match.
-  await a.locator("#primary").selectOption("negev");
+  server.game.openingBuySeconds = 20;
   await a.locator("#ready").click();
   await b.locator("#ready").click();
   await a.locator("#start").click();
   await a.locator("#enter").waitFor({ timeout: 45000 });
+  await a.locator("#pause-buy").click();
+  await a.locator('[data-buy-tab="HEAVY"]').click();
+  await a.locator('[data-buy="negev"]').click();
   await a.waitForFunction(
     () => document.querySelector("#weapon-name").textContent === "NEGEV",
   );

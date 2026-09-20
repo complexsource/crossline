@@ -24,6 +24,7 @@ function fixture(options = {}) {
         now: () => now,
         random: () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296,
         loadHandshake: false,
+        openingBuySeconds: 0,
         duration: 300,
         ...options,
       },

@@ -10,7 +10,7 @@ Branch: `version-2`. V1 remains on `codex/version-1` at `b4b13fddb46d02f8d4934ff
 - Server-owned inventory, switching/previous/cycle, reload, drop and atomic pickup with ammunition preservation.
 - HE with obstruction-aware damage; flash with facing/distance/obstruction; persistent volumetric smoke independent of visual quality presets.
 - Mode-gated BombObjective tests cover carrying, dropping, pickup, interrupted planting/defusing, beeping and detonation. It is intentionally not connected to Team Deathmatch inventory.
-- Simple homepage, separate named-room creation, fixed map card, team/loadout selection, readiness, loading progress, coordinated countdown, results and same-room replay.
+- Simple homepage, separate named-room creation, fixed map card, team selection, readiness, loading progress, coordinated countdown, results and same-room replay. Equipment selection now lives in the in-game [Buy Menu](BUY_MENU.md), with 20-second opening and 10-second respawn windows.
 - HUD, team scoreboard/ping, kill feed, hit/headshot feedback, crosshair preview, practical key rebinding and categorized graphics/audio controls.
 - Positional synthesized effects, surface footsteps, ambience, limited room chat, and one append-only match summary per finished match.
 

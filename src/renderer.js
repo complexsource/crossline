@@ -15,7 +15,7 @@ import { WEAPONS, eyeHeight } from "../shared/game.js";
 import { GRENADE_THROW_SECONDS } from "../shared/actions.js";
 import { groundAt } from "../shared/maps.js";
 import { smokeVolume } from "./smoke.js";
-import { assetMaterials, setCharacterDetail } from "./assets.js";
+import { assetMaterials, setCharacterDetail, hasAsset } from "./assets.js";
 import { TEAMS } from "../shared/teams.js";
 import { weaponPose, reloadPose, smooth } from "./weapon-motion.js";
 import {
@@ -321,6 +321,9 @@ export class Renderer {
     this.camera.lookAt(-1, 2, -5);
   }
   setWeapon(id, team = "soldiers") {
+    // A pickup/effect packet can precede an on-demand model download. Keep the
+    // scene alive; render() hides the old weapon until the requested asset exists.
+    if (!hasAsset(id)) return;
     if (id === this.weapon && team === this.weaponTeam) return;
     if (this.holster) {
       this.holster.removeFromParent();
@@ -400,6 +403,11 @@ export class Renderer {
   }
   setRemoteWeapon(mesh, id) {
     const u = mesh.userData;
+    if (!hasAsset(id)) {
+      if (u.gun) u.gun.visible = false;
+      return;
+    }
+    if (u.gun) u.gun.visible = true;
     if (id === u.weapon) return;
     if (u.gun) {
       u.weaponPivot.remove(u.gun);
@@ -487,6 +495,7 @@ export class Renderer {
       }
     const ds = new Set();
     for (const d of state.drops || []) {
+      if (!hasAsset(d.weapon)) continue;
       ds.add(d.id);
       let m = this.drops.get(d.id);
       if (!m) {
@@ -852,7 +861,8 @@ export class Renderer {
         this.camera.updateProjectionMatrix();
       }
       const throwing = this.throwUntil > t,
-        visualWeapon = throwing ? this.throwWeapon : local.weapon,
+        requestedWeapon = throwing ? this.throwWeapon : local.weapon,
+        visualWeapon = hasAsset(requestedWeapon) ? requestedWeapon : "knife",
         pose = weaponPose(visualWeapon),
         motion = reloadPose(visualWeapon, throwing ? 0 : local.reload),
         bob =
@@ -893,7 +903,9 @@ export class Renderer {
         motion.tilt * 0.34 + this.kick * 0.015 + bob * 0.5,
       );
       this.gun.visible =
-        local.hp > 0 && !(aim && WEAPONS[local.weapon].type === "SNIPER");
+        hasAsset(requestedWeapon) &&
+        local.hp > 0 &&
+        !(aim && WEAPONS[local.weapon].type === "SNIPER");
       this.gun.userData.flash.visible =
         this.flashUntil > t && !pose.equipment && local.weapon !== "knife";
       this.muzzleLight.intensity = this.gun.userData.flash.visible

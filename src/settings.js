@@ -23,6 +23,7 @@ export const BINDINGS = {
   cycleDown: "WheelDown",
   scoreboard: "Tab",
   chat: "KeyY",
+  buy: "KeyB",
 };
 export const DEFAULTS = {
   sensitivity: 0.0021,
@@ -61,6 +62,19 @@ export function readSettings(storage = globalThis.localStorage) {
     for (const [k, v] of Object.entries(raw))
       if (k in DEFAULTS && k !== "bindings" && typeof v === typeof DEFAULTS[k])
         s[k] = v;
+    // Adding the Buy Menu must not steal an existing custom B binding.
+    if (
+      raw.bindings &&
+      !raw.bindings.buy &&
+      Object.values(raw.bindings).includes("KeyB")
+    ) {
+      s.bindings.buy =
+        ["KeyN", "KeyV", "KeyM", "KeyP", "KeyO", "KeyL"].find(
+          (code) =>
+            !Object.values(raw.bindings).includes(code) &&
+            !Object.values(BINDINGS).includes(code),
+        ) || "F8";
+    }
     if (raw.bindings)
       for (const [k, v] of Object.entries(raw.bindings))
         if (
@@ -135,7 +149,7 @@ const groups = {
     "cycleUp",
     "cycleDown",
   ],
-  GAME: ["scoreboard", "chat"],
+  GAME: ["buy", "scoreboard", "chat"],
 };
 let capture = null,
   settingsDialog = null;

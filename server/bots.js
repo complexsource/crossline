@@ -290,6 +290,33 @@ export function updateBot(game, room, p, now) {
   if (!config || p.hp <= 0) return;
   if (!p.botState) resetBot(p, now);
   const ai = p.botState;
+  if (!ai.bought && game.now() + 0.1 < p.buyUntil) {
+    // Default team kit is always usable. Re-equip the previous chosen kit on
+    // respawn through the same authoritative buy validation as human players.
+    try {
+      game.buy(p.id, {
+        itemId: p.previousLoadout ? "previous" : p.primary,
+        spawnId: p.spawnId,
+        epoch: room.loadEpoch,
+      });
+    } catch (error) {
+      // An expired window after a server stall is a normal rejected purchase.
+      if (game.now() < p.buyUntil) throw error;
+    }
+    ai.bought = true;
+  }
+  if (game.opening(room)) {
+    game.input(p.id, {
+      ...emptyInput(),
+      yaw: p.yaw,
+      pitch: p.pitch,
+      seq: Math.max(p.receivedSeq, p.ack) + 1,
+      spawnId: p.spawnId,
+      fireEpoch: p.fireEpoch,
+      weapon: p.weapon,
+    });
+    return;
+  }
   if (now >= ai.nextThink) decide(game, room, p, now, config);
   const input = emptyInput();
   let wantedYaw = p.yaw,

@@ -10,14 +10,10 @@ import { chooseSpawn } from "./spawns.js";
 import { BOT_NAMES, BOT_DIFFICULTIES } from "../shared/bots.js";
 import { getBotNavigation } from "./bot-navigation.js";
 import { resetBot, updateBot } from "./bots.js";
+import { OPENING_BUY_SECONDS, RESPAWN_BUY_SECONDS } from "../shared/buy.js";
+import { beginBuyLife, selectItem, previousItems } from "./buy.js";
 import { getMap, validMap, groundAt } from "../shared/maps.js";
-import {
-  WEAPONS,
-  PRIMARIES,
-  PISTOLS,
-  GRENADES,
-  isFirearm,
-} from "../shared/weapons.js";
+import { WEAPONS, GRENADES, isFirearm } from "../shared/weapons.js";
 import { TEAM_IDS, TEAMS, emptyScores } from "../shared/teams.js";
 import {
   TICK,
@@ -56,6 +52,8 @@ export class Game {
       random = Math.random,
       loadHandshake = true,
       countdown = 3,
+      openingBuySeconds = OPENING_BUY_SECONDS,
+      respawnBuySeconds = RESPAWN_BUY_SECONDS,
       onMatch = () => {},
     } = {},
   ) {
@@ -66,6 +64,8 @@ export class Game {
       random,
       loadHandshake,
       countdown,
+      openingBuySeconds,
+      respawnBuySeconds,
       onMatch,
     });
     this.rooms = new Map();
@@ -193,14 +193,18 @@ export class Game {
       throw Error("Choices can only change in the waiting room.");
     if (
       (team !== undefined && !TEAM_IDS.includes(team)) ||
-      (primary !== undefined && !PRIMARIES.includes(primary)) ||
-      (secondary !== undefined && !PISTOLS.includes(secondary)) ||
+      primary !== undefined ||
+      secondary !== undefined ||
       (ready !== undefined && typeof ready !== "boolean")
     )
-      throw Error("Invalid team or loadout.");
-    if (team !== undefined) p.team = team;
-    if (primary !== undefined) p.primary = primary;
-    if (secondary !== undefined) p.secondary = secondary;
+      throw Error(
+        "Choose your team here. Select equipment in the in-game Buy Menu.",
+      );
+    if (team !== undefined) {
+      p.team = team;
+      p.primary = TEAMS[team].primary;
+      p.secondary = TEAMS[team].secondary;
+    }
     p.ready = ready ?? false;
     this.broadcast(r);
   }
@@ -335,9 +339,11 @@ export class Game {
   }
   begin(r) {
     r.state = "playing";
-    r.endsAt = this.now() + this.duration;
+    r.buyEndsAt = this.now() + this.openingBuySeconds;
+    r.combatStarted = this.openingBuySeconds === 0;
+    r.endsAt = r.buyEndsAt + this.duration;
     r.matchId = randomBytes(8).toString("hex");
-    for (const p of r.players.values()) this.spawn(r, p);
+    for (const p of r.players.values()) this.spawn(r, p, true);
     this.broadcast(r);
     this.snapshot(r);
   }
@@ -389,7 +395,7 @@ export class Game {
     }
     this.broadcast(r);
   }
-  spawn(r, p) {
+  spawn(r, p, initial = false) {
     const spot = chooseSpawn(r, p, this.now(), this.random, (a, b) =>
       this.visible(a, b, r),
     );
@@ -421,9 +427,39 @@ export class Game {
       flashStrength: 0,
       pendingShot: null,
     });
+    p.previousLoadout = p.loadout ? { ...p.loadout } : null;
+    p.primary = TEAMS[p.team].primary;
+    p.secondary = TEAMS[p.team].secondary;
     resetInventory(p);
+    p.loadout = { primary: p.primary, secondary: p.secondary };
+    beginBuyLife(p);
+    p.buyUntil = initial ? r.buyEndsAt : this.now() + this.respawnBuySeconds;
     p.spawnId++;
     if (p.bot) resetBot(p, this.now());
+  }
+  buy(id, data = {}) {
+    const r = this.roomOf(id),
+      p = this.player(id),
+      now = this.now();
+    if (!r || r.state !== "playing" || !p || p.hp <= 0 || now >= r.endsAt)
+      throw Error("Buying is only available while you are alive in a match.");
+    if (!data || data.spawnId !== p.spawnId || data.epoch !== r.loadEpoch)
+      throw Error("That selection belongs to an earlier deployment.");
+    if (now >= p.buyUntil)
+      throw Error("Buy time has ended. Buy again after respawning.");
+    if (now < p.nextBuy)
+      throw Error("Please wait for your equipment selection.");
+    if (p.action === "throw" && now < p.actionUntil)
+      throw Error("Finish throwing before changing equipment.");
+    const ids = data.itemId === "previous" ? previousItems(p) : [data.itemId];
+    for (const item of ids) selectItem(p, item, now);
+    p.nextBuy = now + 0.18;
+    this.emit(r.code, "fx", { type: "draw", id, weapon: p.weapon });
+    this.snapshot(r);
+    return { itemId: data.itemId, spawnId: p.spawnId, revision: p.buyRevision };
+  }
+  opening(r) {
+    return this.now() < (r.buyEndsAt || 0);
   }
   input(id, data) {
     const p = this.player(id),
@@ -447,6 +483,11 @@ export class Game {
     input.yaw = data.yaw % (Math.PI * 2);
     input.pitch = clamp(data.pitch, -1.48, 1.48);
     input.shoot &&= data.fireEpoch === p.fireEpoch && data.weapon === p.weapon;
+    if (this.opening(r))
+      Object.assign(input, emptyInput(), {
+        yaw: input.yaw,
+        pitch: input.pitch,
+      });
     p.input = input;
     p.receivedSeq = data.seq;
     p.lastInput = this.now();
@@ -457,6 +498,7 @@ export class Game {
       now = this.now();
     if (!p || r.state !== "playing" || p.hp <= 0) return false;
     if (type === "fire") {
+      if (this.opening(r)) return false;
       if (
         !value ||
         value.spawnId !== p.spawnId ||
@@ -552,6 +594,7 @@ export class Game {
     );
   }
   throwGrenade(r, p) {
+    if (this.opening(r)) return;
     const now = this.now(),
       kind = p.weapon;
     if (
@@ -585,6 +628,7 @@ export class Game {
   }
   damage(r, target, amount, shooter, weapon, headshot = false) {
     if (
+      this.opening(r) ||
       !Number.isFinite(amount) ||
       amount <= 0 ||
       target.hp <= 0 ||
@@ -631,6 +675,7 @@ export class Game {
     }
   }
   fire(r, p) {
+    if (this.opening(r)) return;
     if (actionBlocksFire(p, this.now())) return;
     if (GRENADES.includes(p.weapon)) {
       this.throwGrenade(r, p);
@@ -808,6 +853,11 @@ export class Game {
       }
       if (r.state === "countdown" && now >= r.beginsAt) this.begin(r);
       if (r.state !== "playing") continue;
+      if (!r.combatStarted && !this.opening(r)) {
+        r.combatStarted = true;
+        for (const p of r.players.values()) fireBarrier(p);
+        this.emit(r.code, "combatStarted", {});
+      }
       if (now >= r.endsAt) {
         this.finish(r);
         continue;
@@ -820,6 +870,10 @@ export class Game {
         if (p.bot) updateBot(this, r, p, now);
         if (now - p.lastInput > 0.25)
           p.input = { ...emptyInput(), yaw: p.yaw, pitch: p.pitch };
+        if (this.opening(r)) {
+          p.input = { ...emptyInput(), yaw: p.input.yaw, pitch: p.input.pitch };
+          p.vx = p.vz = 0;
+        }
         move(p, p.input, TICK, getMap(r.mapId).boxes);
         p.ack = p.receivedSeq;
         if (p.action === "throw" && now >= p.actionUntil) {
@@ -929,7 +983,8 @@ export class Game {
     const now = this.now();
     this.emit(r.code, "state", {
       time: now,
-      remaining: Math.max(0, r.endsAt - now),
+      remaining: Math.min(this.duration, Math.max(0, r.endsAt - now)),
+      openingRemaining: Math.max(0, (r.buyEndsAt || 0) - now),
       scores: r.scores,
       grenades: r.grenades.map(({ id, kind, x, y, z }) => ({
         id,
@@ -949,6 +1004,8 @@ export class Game {
         name: p.name,
         bot: p.bot,
         difficulty: p.difficulty,
+        buyRemaining: p.hp > 0 ? Math.max(0, (p.buyUntil || 0) - now) : 0,
+        previousLoadout: p.previousLoadout,
         team: p.team,
         x: p.x,
         y: p.y,

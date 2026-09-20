@@ -15,6 +15,8 @@ export async function createGameServer({
   random,
   loadHandshake = true,
   countdown = 3,
+  openingBuySeconds,
+  respawnBuySeconds,
   statsDirectory = null,
 } = {}) {
   // Prepare shared static routes before accepting connections. Adding the first
@@ -40,6 +42,8 @@ export async function createGameServer({
       random,
       loadHandshake,
       countdown,
+      openingBuySeconds,
+      respawnBuySeconds,
       onMatch: (result) => {
         if (statsDirectory)
           statsWrites = statsWrites
@@ -100,6 +104,7 @@ export async function createGameServer({
       return { code: r.code };
     });
     handle("choose", (data) => game.choose(socket.id, data));
+    handle("buy", (data) => game.buy(socket.id, data));
     handle("configure", (data) => game.configure(socket.id, data));
     handle("addBot", (data) => game.addBot(socket.id, data));
     handle("configureBot", (data) => game.configureBot(socket.id, data));

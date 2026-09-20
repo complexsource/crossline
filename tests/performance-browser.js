@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createGameServer } from "../server/index.js";
 
 // Isolated server/profile. No existing rooms or browser settings are touched.
-const server = await createGameServer({ countdown: 0.1 });
+const server = await createGameServer({ countdown: 0.1, openingBuySeconds: 0 });
 await new Promise((resolve) => server.http.listen(0, "127.0.0.1", resolve));
 const url = `http://127.0.0.1:${server.http.address().port}`;
 const browser = await chromium.launch({ channel: "chrome", headless: true });
@@ -252,7 +252,9 @@ try {
   );
 } finally {
   await writeFile(
-    process.env.RECOVERY_ONLY ? "test-results/performance-recovery.json" : "test-results/performance.json",
+    process.env.RECOVERY_ONLY
+      ? "test-results/performance-recovery.json"
+      : "test-results/performance.json",
     JSON.stringify(report, null, 2),
   );
   await browser.close();

@@ -127,6 +127,8 @@ test("wire snapshots preserve authority fields without depending on previous pac
     actionState: "ready",
     action: "idle",
     actionTime: 0,
+    buyRemaining: 0,
+    previousLoadout: null,
   };
   const state = {
     time: 30,
@@ -156,7 +158,7 @@ test("match loading includes all room loadouts and excludes unused arsenal", () 
     { primary: "m4a4", secondary: "usps" },
     { primary: "awp", secondary: "glock18" },
   ]);
-  assert.equal(ids.length, 12);
+  assert.equal(ids.length, 13);
   assert.ok(
     ids.includes("awp") &&
       ids.includes("smoke") &&

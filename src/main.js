@@ -4,8 +4,6 @@ import { COASTLINE, getMap, areaAt, surfaceAt } from "../shared/maps.js";
 import { TEAMS, TEAM_IDS } from "../shared/teams.js";
 import {
   WEAPONS,
-  PRIMARIES,
-  PISTOLS,
   GRENADES,
   TICK,
   move,
@@ -27,6 +25,7 @@ import { GraphicsRecovery } from "./graphics-recovery.js";
 import { effectiveQuality } from "./performance.js";
 import { unpackSnapshot } from "../shared/snapshot.js";
 import { BOT_DIFFICULTIES } from "../shared/bots.js";
+import { createBuyMenu } from "./buy-menu.js";
 import "./style.css";
 
 const app = document.querySelector("#app"),
@@ -45,6 +44,9 @@ const sound = new Sound(settings),
 const fireButton = new FireButton();
 let pressId = 0,
   predictedActionUntil = 0;
+let assetLibrary = null;
+const weaponLoads = new Map(),
+  weaponRetryAt = new Map();
 let room = null,
   snapshot = null,
   local = null,
@@ -85,6 +87,7 @@ let feed = [],
   renderAt = 0;
 const recovery = new GraphicsRecovery(canvas, {
   pause: () => {
+    closeBuy();
     resetInput();
     pending = [];
   },
@@ -146,6 +149,107 @@ function call(event, data = {}) {
   );
 }
 const k = (action) => keyLabel(settings.bindings[action]);
+const buyMenu = createBuyMenu({
+  getState: () => ({ player: local, opening: snapshot?.openingRemaining > 0 }),
+  key: () => k("buy"),
+  close: closeBuy,
+  select: async (itemId, isCurrent) => {
+    if (!local || local.buyRemaining <= 0 || local.hp <= 0) return null;
+    const spawnId = local.spawnId,
+      epoch = room?.loadEpoch;
+    const ids =
+      itemId === "previous"
+        ? Object.values(local.previousLoadout || {})
+        : [itemId];
+    await loadWeaponModels(ids);
+    // Never apply a pending download/purchase to a different life or match.
+    if (
+      !playing ||
+      !isCurrent() ||
+      !buyMenu.isOpen ||
+      room?.loadEpoch !== epoch ||
+      local?.spawnId !== spawnId ||
+      local.hp <= 0 ||
+      local.buyRemaining <= 0
+    )
+      return null;
+    resetInput();
+    sound.cancelReload();
+    return call("buy", { itemId, spawnId, epoch });
+  },
+});
+function closeBuy(resume = false) {
+  const wasOpen = buyMenu.isOpen;
+  buyMenu.close();
+  if (!wasOpen) return;
+  resetInput();
+  if (resume && playing && local?.hp > 0 && !recovery.blocked) captureMouse();
+}
+function toggleBuy() {
+  if (buyMenu.isOpen) {
+    closeBuy(true);
+    return;
+  }
+  if (!local || local.hp <= 0 || !(local.buyRemaining > 0)) {
+    toast("Buy time has ended. You get 10 seconds after respawning.");
+    return;
+  }
+  resetInput();
+  sound.cancelReload();
+  document.exitPointerLock?.();
+  buyMenu.open();
+}
+function textureLimit() {
+  return settings.textures === "low" ||
+    effectiveQuality(settings.quality) === "low"
+    ? 512
+    : effectiveQuality(settings.quality) === "medium"
+      ? 1024
+      : 2048;
+}
+async function loadWeaponModels(ids) {
+  if (!assetLibrary) assetLibrary = await import("./assets.js");
+  ids = [
+    ...new Set(ids.filter((id) => Object.hasOwn(WEAPONS, id) && id !== "bomb")),
+  ];
+  const missing = ids.filter(
+    (id) => !assetLibrary.hasAsset(id) && !weaponLoads.has(id),
+  );
+  if (missing.length) {
+    const work = assetLibrary
+      .loadAssets(() => {}, { ids: missing, textureLimit: textureLimit() })
+      .catch((error) => {
+        for (const id of missing)
+          weaponRetryAt.set(id, performance.now() + 5000);
+        toast(`Equipment download failed: ${error.message}. You can retry.`);
+        throw error;
+      })
+      .finally(() => {
+        for (const id of missing) weaponLoads.delete(id);
+      });
+    for (const id of missing) weaponLoads.set(id, work);
+  }
+  await Promise.all(ids.map((id) => weaponLoads.get(id)));
+}
+function streamStateWeapons(state) {
+  const ids = [
+    ...state.players.flatMap((p) => [
+      p.weapon,
+      p.slots?.primary,
+      p.slots?.secondary,
+    ]),
+    ...(state.drops || []).map((d) => d.weapon),
+  ];
+  const missing = [...new Set(ids)].filter(
+    (id) =>
+      id &&
+      assetLibrary &&
+      !assetLibrary.hasAsset(id) &&
+      !weaponLoads.has(id) &&
+      performance.now() >= (weaponRetryAt.get(id) || 0),
+  );
+  if (missing.length) loadWeaponModels(missing).catch(() => {});
+}
 const botDefaults = { difficulty: "normal", team: "auto" };
 function botPanel(host, inLobby) {
   const bots = room.players.filter((p) => p.bot),
@@ -182,16 +286,14 @@ function botPanel(host, inLobby) {
     const result = await call("addBot", { ...botDefaults });
     if (!result) button.disabled = room.players.length >= room.playerLimit;
   });
-  panel
-    .querySelectorAll("[data-bot-difficulty]")
-    .forEach(
-      (el) =>
-        (el.onchange = () =>
-          call("configureBot", {
-            botId: el.dataset.botDifficulty,
-            difficulty: el.value,
-          })),
-    );
+  panel.querySelectorAll("[data-bot-difficulty]").forEach(
+    (el) =>
+      (el.onchange = () =>
+        call("configureBot", {
+          botId: el.dataset.botDifficulty,
+          difficulty: el.value,
+        })),
+  );
   panel
     .querySelectorAll("[data-bot-team]")
     .forEach(
@@ -221,6 +323,7 @@ function chrome(content) {
   return `<div class="shell"><header>${logo}<div class="online"><i class="${socket.connected ? "" : "offline"}"></i>${socket.connected ? "SERVER ONLINE" : "CONNECTING…"}</div></header>${content}<footer><span>COASTLINE <b>OPERATIONS / 02</b></span><span>DESKTOP · KEYBOARD + MOUSE</span><span>TEAM DEATHMATCH <b>2–10 PLAYERS</b></span></footer></div>`;
 }
 function leaveVisuals() {
+  closeBuy();
   playing = false;
   sound.setPlaying(false);
   graphics?.clearPlayers();
@@ -300,21 +403,7 @@ function showCreate() {
 function teamPanel(team) {
   const players = room.players.filter((p) => p.team === team),
     self = room.players.find((p) => p.id === socket.id);
-  return `<section class="team-panel ${team}"><div class="team-banner"><img src="/previews/${TEAMS[team].model}.webp" alt="${TEAMS[team].name} character"><div><small>CHOOSE YOUR SIDE</small><h2>${TEAMS[team].name}</h2><span>${players.length} PLAYERS</span></div></div><div class="roster">${players.map((p) => `<div class="player-row"><span class="avatar">${esc(p.name.charAt(0).toUpperCase())}</span><span><b>${esc(p.name)} ${p.id === socket.id ? "<small>YOU</small>" : ""}</b><small>${esc(WEAPONS[p.primary].name)} · ${esc(WEAPONS[p.secondary].name)}</small></span><span class="ready-state ${p.ready ? "ready" : ""}">${p.ready ? "READY" : "NOT READY"}${p.id === room.host ? "<small>HOST</small>" : ""}</span></div>`).join("")}${players.length < Math.ceil(room.playerLimit / 2) ? '<div class="empty-slot">＋ Waiting for your squad</div>' : ""}</div><button class="team-button" data-team="${team}" ${room.state !== "lobby" ? "disabled" : ""}>${self?.team === team ? "✓ YOUR TEAM" : "JOIN " + TEAMS[team].name}</button></section>`;
-}
-function weaponOptions(list, selected) {
-  return [...new Set(list.map((id) => WEAPONS[id].type))]
-    .map(
-      (type) =>
-        `<optgroup label="${type}">${list
-          .filter((id) => WEAPONS[id].type === type)
-          .map(
-            (id) =>
-              `<option value="${id}" ${id === selected ? "selected" : ""}>${WEAPONS[id].name}</option>`,
-          )
-          .join("")}</optgroup>`,
-    )
-    .join("");
+  return `<section class="team-panel ${team}"><div class="team-banner"><img src="/previews/${TEAMS[team].model}.webp" alt="${TEAMS[team].name} character"><div><small>CHOOSE YOUR SIDE</small><h2>${TEAMS[team].name}</h2><span>${players.length} PLAYERS</span></div></div><div class="roster">${players.map((p) => `<div class="player-row"><span class="avatar">${p.bot ? "AI" : esc(p.name.charAt(0).toUpperCase())}</span><span><b>${esc(p.name)} ${p.id === socket.id ? "<small>YOU</small>" : ""}</b><small>${p.bot ? "BOT SQUADMATE" : "EQUIPMENT SELECTED IN MATCH"}</small></span><span class="ready-state ${p.ready ? "ready" : ""}">${p.ready ? "READY" : "NOT READY"}${p.id === room.host ? "<small>HOST</small>" : ""}</span></div>`).join("")}${players.length < Math.ceil(room.playerLimit / 2) ? '<div class="empty-slot">＋ Waiting for your squad</div>' : ""}</div><button class="team-button" data-team="${team}" ${room.state !== "lobby" ? "disabled" : ""}>${self?.team === team ? "✓ YOUR TEAM" : "JOIN " + TEAMS[team].name}</button></section>`;
 }
 function showRoom() {
   page = "room";
@@ -324,17 +413,14 @@ function showRoom() {
     inLobby = room.state === "lobby";
   if (!self) return;
   app.innerHTML = chrome(
-    `<main class="lobby"><div class="page-heading"><div><div class="eyebrow">${esc(room.name)} / TEAM DEATHMATCH</div><h1>ASSEMBLE YOUR TEAM.</h1></div><button id="leave" class="subtle">LEAVE ROOM ↗</button></div><div class="room-strip panel"><div><small>ROOM CODE</small><button id="copy" title="Copy room code">${room.code} <span>⧉</span></button></div><button id="share" class="subtle">COPY INVITE LINK ↗</button><div class="host-name"><small>HOST</small><b>${esc(room.players.find((p) => p.id === room.host)?.name)}</b></div><span class="room-count">${room.players.length}<small> / ${room.playerLimit} PLAYERS</small></span></div><div class="room-layout"><div><div class="teams">${TEAM_IDS.map(teamPanel).join("")}</div><div class="loadout panel"><div class="loadout-fields"><label>PRIMARY WEAPON<select id="primary" ${!inLobby ? "disabled" : ""}>${weaponOptions(PRIMARIES, self.primary)}</select></label><label>SIDEARM<select id="secondary" ${!inLobby ? "disabled" : ""}>${weaponOptions(PISTOLS, self.secondary)}</select></label><small>Knife · HE · Flash · Smoke included. Equipment refills on respawn.</small></div><div class="deploy"><button id="ready" class="${self.ready ? "selected" : ""}" ${!inLobby ? "disabled" : ""}>${self.ready ? "✓ READY — CLICK TO CANCEL" : "I’M READY"}</button><button id="start" class="primary" ${!host || room.players.length < 2 || (inLobby && room.players.some((p) => !p.ready)) ? "disabled" : ""}>${host ? "START GAME" : "WAITING FOR HOST"} <span>↗</span></button></div></div><p class="room-notice muted">${esc(room.notice) || (!inLobby ? "Waiting for the host to return everyone to the room." : "All players must be ready. Teams balance automatically at match start.")}</p></div><aside class="briefing">${mapCard()}<p><b>10</b> MINUTE MATCH <span>·</span> <b>3</b> SECOND RESPAWN</p><button id="lobby-settings" class="subtle">SETTINGS ↗</button></aside></div></main>`,
+    `<main class="lobby"><div class="page-heading"><div><div class="eyebrow">${esc(room.name)} / TEAM DEATHMATCH</div><h1>ASSEMBLE YOUR TEAM.</h1></div><button id="leave" class="subtle">LEAVE ROOM ↗</button></div><div class="room-strip panel"><div><small>ROOM CODE</small><button id="copy" title="Copy room code">${room.code} <span>⧉</span></button></div><button id="share" class="subtle">COPY INVITE LINK ↗</button><div class="host-name"><small>HOST</small><b>${esc(room.players.find((p) => p.id === room.host)?.name)}</b></div><span class="room-count">${room.players.length}<small> / ${room.playerLimit} PLAYERS</small></span></div><div class="room-layout"><div><div class="teams">${TEAM_IDS.map(teamPanel).join("")}</div><div class="loadout panel"><div class="deployment-note"><div class="eyebrow">EQUIP ON DEPLOYMENT</div><h3>YOUR KIT. YOUR CALL.</h3><p>Press <kbd>${k("buy")}</kbd> in the match to open the Buy Menu.<br>20 seconds on deployment · 10 seconds after respawn.</p><small>Free equipment selection. A default kit is always provided.</small></div><div class="deploy"><button id="ready" class="${self.ready ? "selected" : ""}" ${!inLobby ? "disabled" : ""}>${self.ready ? "✓ READY — CLICK TO CANCEL" : "I’M READY"}</button><button id="start" class="primary" ${!host || room.players.length < 2 || (inLobby && room.players.some((p) => !p.ready)) ? "disabled" : ""}>${host ? "START GAME" : "WAITING FOR HOST"} <span>↗</span></button></div></div><p class="room-notice muted">${esc(room.notice) || (!inLobby ? "Waiting for the host to return everyone to the room." : "All players must be ready. Teams balance automatically at match start.")}</p></div><aside class="briefing">${mapCard()}<p><b>10</b> MINUTE MATCH <span>·</span> <b>3</b> SECOND RESPAWN</p><button id="lobby-settings" class="subtle">SETTINGS ↗</button></aside></div></main>`,
   );
   document
     .querySelectorAll("[data-team]")
     .forEach(
       (b) => (b.onclick = () => call("choose", { team: b.dataset.team })),
     );
-  $("#primary").onchange = (e) => call("choose", { primary: e.target.value });
   $(".loadout").after(botPanel(host, inLobby));
-  $("#secondary").onchange = (e) =>
-    call("choose", { secondary: e.target.value });
   $("#ready").onclick = () => call("choose", { ready: !self.ready });
   $("#start").onclick = () => {
     sound.unlock();
@@ -369,12 +455,13 @@ async function ensureAssets() {
   assetPromise = (async () => {
     loadText = "Preparing renderer";
     loadProgress = 0.02;
-    const [{ Renderer }, { loadAssets, matchAssetIds }, { materialsReady }] =
-      await Promise.all([
-        import("./renderer.js"),
-        import("./assets.js"),
-        import("./materials.js"),
-      ]);
+    const [{ Renderer }, assets, { materialsReady }] = await Promise.all([
+      import("./renderer.js"),
+      import("./assets.js"),
+      import("./materials.js"),
+    ]);
+    assetLibrary = assets;
+    const { loadAssets, matchAssetIds } = assets;
     loadText = "Loading models";
     await loadAssets(
       (value) => {
@@ -383,13 +470,7 @@ async function ensureAssets() {
       },
       {
         ids: matchAssetIds(room?.players),
-        textureLimit:
-          settings.textures === "low" ||
-          effectiveQuality(settings.quality) === "low"
-            ? 512
-            : effectiveQuality(settings.quality) === "medium"
-              ? 1024
-              : 2048,
+        textureLimit: textureLimit(),
       },
     );
     loadText = "Preparing materials";
@@ -448,6 +529,7 @@ function currentAssets() {
     ...new Set([
       "knife",
       ...GRENADES,
+      ...Object.values(TEAMS).flatMap((t) => [t.primary, t.secondary]),
       ...(room?.players || [])
         .flatMap((p) => [p.primary, p.secondary])
         .filter(Boolean),
@@ -530,6 +612,7 @@ function controlsMarkup() {
     ["previous", "PREVIOUS WEAPON"],
     ["drop", "DROP WEAPON"],
     ["use", "USE / PICK UP"],
+    ["buy", "BUY MENU"],
     ["scoreboard", "SCOREBOARD"],
     ["chat", "CHAT"],
   ]
@@ -544,7 +627,7 @@ function showGuide(inMatch = true) {
   const el = document.createElement("dialog");
   el.className = "modal";
   el.id = "guide";
-  el.innerHTML = `<section class="guide-card panel"><div class="eyebrow">A QUICK FIELD GUIDE</div><h2 id="guide-title">KNOW YOUR MOVES.</h2><p class="muted">Move with the keyboard. Look with the mouse. Enemy kills earn your team one point. Highest score after 10 minutes wins.</p>${controlsMarkup()}<div class="guide-notes"><p><b>GRENADES</b> Select with ${k("grenade")}, cycle to HE, Flash or Smoke, then ${k("shoot")} to throw.</p><p><b>KEEP FIGHTING</b> Respawn in 3 seconds. Equipment refills. Team damage is off.</p><p><b>OBJECTIVES</b> Bomb equipment is reserved for a future Bomb/Defuse mode, not Team Deathmatch.</p></div>${inMatch ? '<label class="check"><input id="hide-guide" type="checkbox">Don’t show again</label>' : ""}<button id="guide-close" class="primary">GOT IT <span>↗</span></button></section>`;
+  el.innerHTML = `<section class="guide-card panel"><div class="eyebrow">A QUICK FIELD GUIDE</div><h2 id="guide-title">KNOW YOUR MOVES.</h2><p class="muted">Move with the keyboard. Look with the mouse. Enemy kills earn your team one point. Highest score after 10 minutes wins.</p>${controlsMarkup()}<div class="guide-notes"><p><b>BUY MENU</b> ${k("buy")} opens the armory. Opening buy time: 20 seconds with combat and movement locked. Respawns: 10 seconds to shop during live combat.</p><p><b>GRENADES</b> Select with ${k("grenade")}, cycle to HE, Flash or Smoke, then ${k("shoot")} to throw.</p><p><b>KEEP FIGHTING</b> Respawn in 3 seconds. Equipment refills. Team damage is off.</p><p><b>OBJECTIVES</b> Bomb equipment is reserved for a future Bomb/Defuse mode, not Team Deathmatch.</p></div>${inMatch ? '<label class="check"><input id="hide-guide" type="checkbox">Don’t show again</label>' : ""}<button id="guide-close" class="primary">GOT IT <span>↗</span></button></section>`;
   document.body.append(el);
   const close = (enterMatch = false) => {
     if (inMatch) {
@@ -563,6 +646,7 @@ function showGuide(inMatch = true) {
   });
 }
 function showMatch() {
+  closeBuy();
   page = "match";
   playing = true;
   resultsDismissed = false;
@@ -576,12 +660,13 @@ function showMatch() {
   flashUntil = 0;
   canvas.classList.add("active");
   sound.setPlaying(true);
-  app.innerHTML = `<div class="hud"><div class="map-label"><b>COASTLINE</b><span id="area">DEPLOYING</span><small id="connection-stats"></small></div><div class="match-score"><div class="score soldiers"><span>SOLDIERS</span><b id="soldiers-score">0</b></div><div class="clock"><small>TEAM DEATHMATCH</small><b id="timer">10:00</b></div><div class="score terrorists"><b id="terrorists-score">0</b><span>TERRORISTS</span></div></div><div id="kill-feed"></div><div id="crosshair" class="crosshair" style="${crossStyle()}">${crossMarkup}</div><div id="scope"><i></i></div><div id="hitmarker">×</div><div id="damage-flash"></div><div id="smoke-veil"></div><div id="flash-veil"></div><div id="confirmation">ENEMY ELIMINATED</div><div id="pickup-prompt"></div><div id="death"><small>YOU DIED</small><h2>RESPAWNING IN <span id="respawn">3</span></h2><p>Returning to your team’s position</p></div><div class="hud-bottom"><div class="health-block"><span>+</span><div><small>HEALTH</small><b id="health">100</b><div class="health-bar"><i id="health-fill"></i></div></div></div><div id="weapon-slots" class="weapon-slots"></div><div class="ammo-block"><small id="weapon-name"></small><div><b id="ammo">30</b><span>/ <span id="reserve">120</span></span></div><small id="reload-prompt"></small></div></div><div class="hud-help">${k("scoreboard")} SCOREBOARD <span>·</span> ${k("use")} PICK UP <span>·</span> ESC PAUSE</div><div id="board" class="scoreboard panel"></div><div id="chat-log"></div></div><div id="pause" class="pause-screen"><section class="pause-card panel"><div class="eyebrow">${TEAMS[room.players.find((p) => p.id === socket.id).team].name} / COASTLINE</div><h2>BACK TO THE COAST.</h2><p class="muted">Capture your mouse to play. Escape releases it.</p><button id="enter" class="primary">ENTER MATCH <span>↗</span></button><div class="pause-options"><button data-settings="controls">CONTROLS</button><button data-settings="graphics">GRAPHICS</button><button data-settings="audio">AUDIO</button><button data-settings="gameplay">GAMEPLAY</button></div><button id="pause-how" class="subtle">HOW TO PLAY</button><button id="exit-match" class="subtle">LEAVE MATCH</button></section></div><form id="chat-form" class="hidden"><input id="chat-input" maxlength="140" placeholder="Message your room · Enter to send"></form>`;
+  app.innerHTML = `<div class="hud"><div class="map-label"><b>COASTLINE</b><span id="area">DEPLOYING</span><small id="connection-stats"></small></div><div class="match-score"><div class="score soldiers"><span>SOLDIERS</span><b id="soldiers-score">0</b></div><div class="clock"><small>TEAM DEATHMATCH</small><b id="timer">10:00</b></div><div class="score terrorists"><b id="terrorists-score">0</b><span>TERRORISTS</span></div></div><div id="buy-prompt" class="buy-prompt"><kbd>${k("buy")}</kbd><span id="buy-hint"></span><b id="buy-hint-time"></b></div><div id="weapon-loading"></div><div id="kill-feed"></div><div id="crosshair" class="crosshair" style="${crossStyle()}">${crossMarkup}</div><div id="scope"><i></i></div><div id="hitmarker">×</div><div id="damage-flash"></div><div id="smoke-veil"></div><div id="flash-veil"></div><div id="confirmation">ENEMY ELIMINATED</div><div id="pickup-prompt"></div><div id="death"><small>YOU DIED</small><h2>RESPAWNING IN <span id="respawn">3</span></h2><p>Returning to your team’s position</p></div><div class="hud-bottom"><div class="health-block"><span>+</span><div><small>HEALTH</small><b id="health">100</b><div class="health-bar"><i id="health-fill"></i></div></div></div><div id="weapon-slots" class="weapon-slots"></div><div class="ammo-block"><small id="weapon-name"></small><div><b id="ammo">30</b><span>/ <span id="reserve">120</span></span></div><small id="reload-prompt"></small></div></div><div class="hud-help">${k("buy")} BUY MENU <span>·</span> ${k("scoreboard")} SCOREBOARD <span>·</span> ${k("use")} PICK UP <span>·</span> ESC PAUSE</div><div id="board" class="scoreboard panel"></div><div id="chat-log"></div></div><div id="pause" class="pause-screen"><section class="pause-card panel"><div class="eyebrow">${TEAMS[room.players.find((p) => p.id === socket.id).team].name} / COASTLINE</div><h2>BACK TO THE COAST.</h2><p class="muted">Capture your mouse to play. Escape releases it.</p><button id="enter" class="primary">ENTER MATCH <span>↗</span></button><button id="pause-buy">OPEN BUY MENU <span>${k("buy")}</span></button><div class="pause-options"><button data-settings="controls">CONTROLS</button><button data-settings="graphics">GRAPHICS</button><button data-settings="audio">AUDIO</button><button data-settings="gameplay">GAMEPLAY</button></div><button id="pause-how" class="subtle">HOW TO PLAY</button><button id="exit-match" class="subtle">LEAVE MATCH</button></section></div><form id="chat-form" class="hidden"><input id="chat-input" maxlength="140" placeholder="Message your room · Enter to send"></form>`;
   $("#enter").onclick = () => {
-    if (!settings.hideGuide) showGuide();
+    if (!settings.hideGuide && !(snapshot?.openingRemaining > 0)) showGuide();
     else captureMouse();
   };
   $("#pause-how").onclick = () => showGuide();
+  $("#pause-buy").onclick = toggleBuy;
   $("#exit-match").onclick = leave;
   document
     .querySelectorAll("[data-settings]")
@@ -593,8 +678,7 @@ function showMatch() {
     $("#chat-form").classList.add("hidden");
     captureMouse();
   };
-  confirmationUntil = performance.now() + 1200;
-  $("#confirmation").textContent = "FIGHT";
+  confirmationUntil = 0;
 }
 async function captureMouse() {
   await sound.unlock();
@@ -667,8 +751,14 @@ socket.on("state", (state) => {
   if (!playing || !graphics) return;
   state = unpackSnapshot(state);
   snapshot = state;
+  streamStateWeapons(state);
   const own = state.players.find((p) => p.id === socket.id);
   if (!own) return;
+  if (
+    buyMenu.isOpen &&
+    (own.hp <= 0 || (local && own.spawnId !== local.spawnId))
+  )
+    closeBuy();
   guardGraphics(() => graphics.sync(state, socket.id));
   if (own.hp <= 0 || (local && local.weapon !== own.weapon))
     sound.cancelReload();
@@ -694,7 +784,7 @@ socket.on("state", (state) => {
     const old = { x: local.x, y: local.y, z: local.z };
     pending = pending.filter((c) => c.seq > own.ack);
     local = { ...own };
-    if (local.hp > 0)
+    if (local.hp > 0 && !(state.openingRemaining > 0))
       for (const cmd of pending) move(local, cmd, TICK, COASTLINE.boxes);
     const distance = Math.hypot(
       old.x - local.x,
@@ -709,6 +799,12 @@ socket.on("state", (state) => {
       local.pitch = input.pitch;
     }
   }
+});
+socket.on("combatStarted", () => {
+  if (!playing) return;
+  cancelFire();
+  confirmationUntil = performance.now() + 1500;
+  if ($("#confirmation")) $("#confirmation").textContent = "FIGHT";
 });
 socket.on("fx", (event) => {
   if (!playing) return;
@@ -798,6 +894,8 @@ function cancelFire() {
 function canStartFire() {
   return (
     local &&
+    !(snapshot?.openingRemaining > 0) &&
+    !buyMenu.isOpen &&
     !actionBlocksFire(local) &&
     performance.now() >= predictedActionUntil
   );
@@ -855,6 +953,11 @@ function control(code, down, repeat = false) {
     ([, key]) => key === code,
   )?.[0];
   if (!action) return false;
+  if (action === "buy" && document.activeElement !== $("#chat-input")) {
+    if (down && !repeat) toggleBuy();
+    return true;
+  }
+  if (buyMenu.isOpen) return false;
   if (action === "shoot" && !down) {
     fireButton.release();
     input.shoot = false;
@@ -973,12 +1076,30 @@ window.addEventListener("settingschange", () => {
 });
 function updateHud(now) {
   if (!playing || !local || !snapshot) return;
+  buyMenu.update();
   const text = (id, value) => {
       const el = document.getElementById(id);
       if (el && el.textContent !== String(value)) el.textContent = value;
     },
     w = WEAPONS[local.weapon],
     secs = Math.max(0, Math.ceil(snapshot.remaining));
+  const buying = local.hp > 0 && local.buyRemaining > 0,
+    opening = snapshot.openingRemaining > 0;
+  $("#buy-prompt")?.classList.toggle("visible", buying);
+  text(
+    "buy-hint",
+    opening
+      ? "BUY PHASE · COMBAT STARTS IN"
+      : "RESPAWN BUY TIME · MATCH IS LIVE",
+  );
+  text("buy-hint-time", `${Math.ceil(local.buyRemaining)}s`);
+  if ($("#pause-buy")) $("#pause-buy").disabled = !buying;
+  text(
+    "weapon-loading",
+    assetLibrary && !assetLibrary.hasAsset(local.weapon)
+      ? "PREPARING WEAPON MODEL…"
+      : "",
+  );
   text(
     "timer",
     `${Math.floor(secs / 60)
@@ -1122,7 +1243,8 @@ function advanceFrame(now) {
           weapon: local.weapon,
         };
         socket.volatile.emit("input", cmd);
-        move(local, cmd, TICK, COASTLINE.boxes);
+        if (!(snapshot?.openingRemaining > 0))
+          move(local, cmd, TICK, COASTLINE.boxes);
         pending.push(cmd);
         if (pending.length > 90) pending.shift();
       }
@@ -1130,7 +1252,12 @@ function advanceFrame(now) {
     local.reload = Math.max(0, local.reload - dt);
     local.respawn = Math.max(0, local.respawn - dt);
     local.actionTime = Math.max(0, local.actionTime - dt);
-    if (snapshot) snapshot.remaining = Math.max(0, snapshot.remaining - dt);
+    local.buyRemaining = Math.max(0, local.buyRemaining - dt);
+    if (snapshot) {
+      if (!(snapshot.openingRemaining > 0))
+        snapshot.remaining = Math.max(0, snapshot.remaining - dt);
+      snapshot.openingRemaining = Math.max(0, snapshot.openingRemaining - dt);
+    }
     if (
       locked &&
       input.shoot &&

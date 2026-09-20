@@ -44,6 +44,7 @@ export function drop(room, p, now, { death = false } = {}) {
   room.drops.push(item);
   if (room.drops.length > 40) room.drops.shift();
   delete p.ammo[id];
+  if (p.buyAmmo) p.buyAmmo[id] = { mag: 0, reserve: 0 };
   p.slots[slot] = null;
   p.weapon = p.slots.primary || p.slots.secondary || "knife";
   p.reloadAt = 0;
@@ -75,6 +76,7 @@ export function pickup(room, p, id, now, canSee) {
   }
   p.slots[slot] = item.weapon;
   p.ammo[item.weapon] = { ...item.ammo };
+  if (p.buyAmmo) p.buyAmmo[item.weapon] = p.ammo[item.weapon];
   equip(p, item.weapon, now);
   beginAction(p, "pickup", now, 0.2);
   return true;

@@ -11,6 +11,7 @@ export function fixture(options = {}) {
         random: () => 0.5,
         duration: 60,
         loadHandshake: false,
+        openingBuySeconds: 0, // Combat-unit fixtures skip preparation; buy.test.js covers real timers.
         onMatch: (r) => saved.push(r),
         ...options,
       },

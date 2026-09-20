@@ -6,7 +6,11 @@ import { emptyInput } from "../shared/game.js";
 import { resetBot } from "../server/bots.js";
 
 // Real production client and authoritative server; never touches live rooms.
-const server = await createGameServer({ production: true, countdown: 0.15 });
+const server = await createGameServer({
+  production: true,
+  countdown: 0.15,
+  openingBuySeconds: 0,
+});
 await new Promise((resolve) => server.http.listen(0, "127.0.0.1", resolve));
 const url = `http://127.0.0.1:${server.http.address().port}`;
 const browser = await chromium.launch({

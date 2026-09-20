@@ -23,6 +23,8 @@ Bot names start with `[BOT]` in the roster, world labels, kill feed, scoreboard 
 
 Bots use the existing Soldier/Terrorist characters and team-standard M4A4/USP-S or AK-47/Glock-18 loadouts. They reload with finite reserves, switch to their pistol if the primary is exhausted, and fall back to the knife when firearms are dry. Respawn restores the same equipment as for humans. The same server validates input, shots, headshots, damage, deaths, team points, protection and three-second respawns.
 
+The `codex/guns` armory adds a shared protected 20-second preparation phase and 10-second personal respawn buy windows. Bots equip through the same server buy API and cannot move, fire, throw or damage players during opening preparation. Their automatic selection does not extend protection or refill already-spent equipment. See [BUY_MENU.md](BUY_MENU.md).
+
 Perception checks horizontal field of view, range, solid-wall line of sight, smoke and server-authoritative flash exposure. Aim uses the last observed position/velocity, never hidden live coordinates. A lost target leaves at most 2.5 seconds of last-seen memory for investigation. Perception updates at the listed bounded rates, not every movement tick; a just-disappeared target can therefore receive a short stale burst until the next check, without live tracking through cover.
 
 Normal/Hard cover selection samples a small neighborhood against actual colliders. Navigation is derived from COASTLINE's shared collision map, including banks, bridges, stairs, roof/tower levels and the crouched canal underpass. Bots use normal movement/jumping/crouching, not teleportation. Stuck recovery retries a route, attempts a jump and abandons an unproductive route.

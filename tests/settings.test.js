@@ -16,3 +16,14 @@ test("settings survive storage, malformed settings fall back, duplicate bindings
   assert.equal(saved.crossSize, 10);
   assert.equal(saved.bindings.reload, "KeyF");
 });
+test("new Buy Menu binding preserves a saved custom B action", () => {
+  const s = readSettings({
+    getItem: () => JSON.stringify({ bindings: { reload: "KeyB" } }),
+  });
+  assert.equal(s.bindings.reload, "KeyB");
+  assert.equal(s.bindings.buy, "KeyN");
+  assert.equal(
+    new Set(Object.values(s.bindings)).size,
+    Object.keys(BINDINGS).length,
+  );
+});

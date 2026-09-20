@@ -9,6 +9,7 @@ test("real sockets: bot authorization, capacity, solo handshake, replay, host tr
     production: true,
     countdown: 0.05,
     duration: 1,
+    openingBuySeconds: 0,
   });
   await new Promise((resolve) => server.http.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.http.address().port}`,

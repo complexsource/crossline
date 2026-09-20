@@ -3,6 +3,7 @@ import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { TEAMS } from "../shared/teams.js";
 
 const models = new Map();
 const worldWeapons = new Map();
@@ -20,10 +21,12 @@ export function matchAssetIds(players = []) {
       "he",
       "flash",
       "smoke",
+      ...Object.values(TEAMS).flatMap((t) => [t.primary, t.secondary]),
       ...players.flatMap((p) => [p.primary, p.secondary]).filter(Boolean),
     ]),
   ];
 }
+export const hasAsset = (id) => models.has(id);
 export function loadAssets(
   onProgress = () => {},
   { ids, textureLimit = 2048 } = {},
