@@ -103,6 +103,7 @@ test("wire snapshots preserve authority fields without depending on previous pac
     yaw: 0.01,
     pitch: -0.3,
     crouch: false,
+    stance: 0,
     grounded: true,
     jumpHeld: false,
     hp: 78,

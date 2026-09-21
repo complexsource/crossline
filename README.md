@@ -24,6 +24,8 @@ To practice alone or fill your squad, use **BOT PLAYERS → Add Bot** in the wai
 
 Production:
 
+For the latest loading, aiming, grenade and movement changes, see the [gameplay polish and verification notes](GAMEPLAY_POLISH.md), including target-device release checks.
+
 ```sh
 npm run build
 npm start

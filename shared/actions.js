@@ -1,4 +1,5 @@
-export const GRENADE_THROW_SECONDS = 0.55;
+export const GRENADE_THROW_SECONDS = 0.75;
+export const GRENADE_RELEASE_SECONDS = 0.36;
 export const ACTION_STATES = Object.freeze({
   idle: "IDLE",
   shoot: "FIRING",

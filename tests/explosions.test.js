@@ -101,12 +101,13 @@ test("two real thrown projectiles bounce, finish their fuse and kill nearby enem
     d = f.game.player("d");
   Object.assign(a, { x: -40, z: 2, pitch: -0.55, yaw: 0 });
   Object.assign(b, { x: 40, z: 2, pitch: -0.55, yaw: 0 });
+  for (const p of [a, b]) Object.assign(p.input, { pitch: -0.55, yaw: 0 });
   Object.assign(c, { x: 40, z: -10.2, protectedUntil: 0 });
   Object.assign(d, { x: -40, z: -10.2, protectedUntil: 0 });
   for (const p of [a, b]) f.game.action(p.id, "switch", "he");
   f.advance(0.21);
   for (const p of [a, b]) f.game.throwGrenade(f.room, p);
-  for (let i = 0; i < 125; i++) {
+  for (let i = 0; i < 150; i++) {
     f.advance(TICK);
     f.game.tick();
   }

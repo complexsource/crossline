@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { createGameServer } from "../server/index.js";
 import { BUY_CATEGORIES, BUY_ITEMS } from "../shared/buy.js";
+import { WEAPONS } from "../shared/weapons.js";
 
 // Production UI, isolated rooms, real Chrome. A controllable server clock makes
 // catalog/layout checks deterministic without changing the shipping 20/10 rules.
@@ -257,6 +258,51 @@ try {
   await a.locator('[data-buy="p90"]').click();
   await expect(a.locator("#weapon-name")).toHaveText("P90");
   assert.equal(await a.locator(".graphics-recovery").count(), 0);
+  // Every optic uses the actual production Buy Menu, input bindings and HUD.
+  Object.assign(pa, { x: -40, y: 0, z: 2, yaw: 0, pitch: 0, vx: 0, vz: 0 });
+  Object.assign(pb, {
+    x: -40,
+    y: 0,
+    z: -10,
+    yaw: Math.PI,
+    pitch: 0,
+    vx: 0,
+    vz: 0,
+  });
+  for (const [id, w] of Object.entries(WEAPONS).filter(([, w]) => w.scoped)) {
+    console.log("Checking production scope", id);
+    await a.locator(`[data-buy-tab="${w.type}"]`).click();
+    time += 0.3;
+    await a.locator(`[data-buy="${id}"]`).click();
+    await expect(a.locator("#weapon-name")).toHaveText(w.name.toUpperCase());
+    time += 0.3;
+    server.game.tick();
+    server.game.snapshot(room);
+    // Chrome rate-limits native capture requests within a two-second window.
+    // Exercise real capture without racing that browser security restriction.
+    await a.waitForTimeout(2100);
+    await a.locator("#buy-resume").click();
+    await a.waitForFunction(
+      () =>
+        !!document.pointerLockElement &&
+        document.querySelector("#pause").style.display === "none",
+    );
+    await a.waitForTimeout(150);
+    await a.mouse.down({ button: "right" });
+    await a.waitForTimeout(200);
+    await expect(a.locator("#scope")).toHaveClass(
+      w.type === "SNIPER" ? "visible" : "optic visible",
+    );
+    await a.waitForTimeout(300);
+    await a.screenshot({ path: `test-results/scope-${id}.png` });
+    await a.mouse.up({ button: "right" });
+    await expect(a.locator("#scope")).not.toHaveClass(/visible/);
+    await a.keyboard.press("KeyB");
+    await expect(a.locator("#buy-menu")).toBeVisible();
+  }
+  console.log(
+    "All six scopes: production purchase, pointer-lock aim, correct HUD reticle and release passed.",
+  );
   // Finish/replay retains room, gives a new 20-second preparation phase.
   server.game.finish(room);
   await a.locator("#again").click();

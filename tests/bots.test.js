@@ -135,6 +135,26 @@ test("one human plus a bot completes readiness/load handshake; bot does not wait
     assert.equal(bot.ammo[id].mag, WEAPONS[id].mag);
   assert.deepEqual(bot.grenades, { he: 1, flash: 1, smoke: 1 });
 });
+test("bot buy cooldown and rejected selections cannot interrupt the room simulation", () => {
+  const f = fixture(),
+    bot = f.add("hard");
+  f.start();
+  f.game.spawn(f.room, bot);
+  bot.nextBuy = f.now() + 0.25;
+  let attempts = 0;
+  f.game.buy = () => {
+    attempts++;
+    throw Error("Please wait for your equipment selection.");
+  };
+  f.tick(0.15);
+  assert.equal(attempts, 0);
+  assert.doesNotThrow(() => f.tick(0.25));
+  assert.equal(attempts, 1);
+  assert.equal(bot.botState.bought, true);
+  assert.ok(WEAPONS[bot.weapon]);
+  assert.equal(f.room.state, "playing");
+});
+
 test("balance prefers moving bots, retains human team and resets bots on same-room replay", () => {
   const f = fixture();
   for (let i = 0; i < 4; i++) f.add("normal", "soldiers");
@@ -464,6 +484,14 @@ test("grenade planning respects difficulty, inventory, cooldown, live effects an
       reactAt: 0,
       nextGrenade: 0,
     });
+  setup();
+  bot.botState.reactAt = f.now() + 0.2;
+  assert.equal(planBotGrenade(f.game, f.room, bot), null);
+  assert.equal(
+    bot.botState.nextGrenade,
+    0,
+    "reaction delay must not spend the grenade-search cooldown",
+  );
   setup();
   assert.equal(planBotGrenade(f.game, f.room, bot).kind, "he");
   assert.equal(

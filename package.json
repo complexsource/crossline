@@ -11,6 +11,8 @@
     "assets": "node tools/build-assets.js",
     "assets:characters": "node tools/build-characters.js --install",
     "assets:buy-thumbnails": "node tools/build-buy-thumbnails.js",
+    "assets:fonts": "node tools/build-fonts.js",
+    "test:polish": "node --test tests/polish.test.js && node tests/polish-browser.js",
     "test:characters": "node tests/characters.js",
     "test:browser": "node tests/browser.js",
     "test:buy": "node --test tests/buy.test.js tests/buy-network.test.js && node tests/buy-browser.js",

@@ -967,9 +967,12 @@ export function buildWorld(scene) {
     meshes = [];
   details.updateMatrixWorld(true);
   details.traverse((o) => {
-    if (o.isMesh) o.userData.decorative = true;
+    // Cheap structural supports stay with the landmark silhouette. Material
+    // batches have different bounds: culling a trunk before its leaves floats it.
+    if (o.isMesh) o.userData.decorative = !o.userData.keepSilhouette;
     if (
       o.isMesh &&
+      !o.userData.keepSilhouette &&
       !o.userData.ownedGeometry &&
       !o.userData.ownedMaterial &&
       !Array.isArray(o.material)

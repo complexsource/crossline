@@ -5,13 +5,20 @@ import {
   actionBlocksFire,
   actionState,
   GRENADE_THROW_SECONDS,
+  GRENADE_RELEASE_SECONDS,
 } from "../shared/actions.js";
+import {
+  grenadeLaunch,
+  stepGrenade,
+  GRENADE_FUSE,
+} from "../shared/grenades.js";
 import { chooseSpawn } from "./spawns.js";
 import { BOT_NAMES, BOT_DIFFICULTIES } from "../shared/bots.js";
 import { getBotNavigation } from "./bot-navigation.js";
 import { resetBot, updateBot } from "./bots.js";
 import { OPENING_BUY_SECONDS, RESPAWN_BUY_SECONDS } from "../shared/buy.js";
 import { beginBuyLife, selectItem, previousItems } from "./buy.js";
+import { canAim } from "../shared/aim.js";
 import { getMap, validMap, groundAt } from "../shared/maps.js";
 import { WEAPONS, GRENADES, isFirearm } from "../shared/weapons.js";
 import { TEAM_IDS, TEAMS, emptyScores } from "../shared/teams.js";
@@ -426,6 +433,7 @@ export class Game {
       flashUntil: 0,
       flashStrength: 0,
       pendingShot: null,
+      stance: 0,
     });
     p.previousLoadout = p.loadout ? { ...p.loadout } : null;
     p.primary = TEAMS[p.team].primary;
@@ -483,6 +491,7 @@ export class Game {
     input.yaw = data.yaw % (Math.PI * 2);
     input.pitch = clamp(data.pitch, -1.48, 1.48);
     input.shoot &&= data.fireEpoch === p.fireEpoch && data.weapon === p.weapon;
+    input.aim &&= canAim(p, this.now());
     if (this.opening(r))
       Object.assign(input, emptyInput(), {
         yaw: input.yaw,
@@ -516,7 +525,7 @@ export class Game {
       p.pendingShot = {
         yaw: value.yaw % (Math.PI * 2),
         pitch: clamp(value.pitch, -1.48, 1.48),
-        aim: value.aim === true,
+        aim: value.aim === true && canAim(p, now),
         time: now,
         weapon: p.weapon,
         fireEpoch: p.fireEpoch,
@@ -608,20 +617,17 @@ export class Game {
     p.grenades[kind]--;
     p.nextUse = now + 0.7;
     p.protectedUntil = 0;
-    const d = direction(p.yaw, p.pitch);
     r.grenades.push({
       id: randomBytes(5).toString("hex"),
       kind,
       owner: p.id,
       team: p.team,
       ownerName: p.name,
-      x: p.x,
-      y: p.y + eyeHeight(p),
-      z: p.z,
-      vx: d.x * 13,
-      vy: d.y * 13 + 4,
-      vz: d.z * 13,
-      explodeAt: now + (kind === "he" ? 2 : kind === "flash" ? 1.7 : 2.3),
+      ...grenadeLaunch(p, getMap(r.mapId).boxes),
+      releaseAt: now + GRENADE_RELEASE_SECONDS,
+      released: false,
+      ownerSpawn: p.spawnId,
+      explodeAt: now + GRENADE_RELEASE_SECONDS + GRENADE_FUSE[kind],
     });
     beginAction(p, "throw", now, GRENADE_THROW_SECONDS);
     this.emit(r.code, "fx", { type: "throw", id: p.id, weapon: kind });
@@ -646,6 +652,7 @@ export class Game {
       this.emit(shooter.id, "hit", {
         headshot,
         killed: target.hp === 0,
+        damage: taken,
         weapon,
       });
     if (!target.hp) {
@@ -917,36 +924,29 @@ export class Game {
         p.wasShooting = p.input.shoot;
       }
       for (const g of r.grenades) {
-        g.vy -= 16 * TICK;
-        let impact = 0;
-        for (const a of ["x", "y", "z"]) {
-          const old = g[a];
-          g[a] += g["v" + a] * TICK;
-          if (
-            getMap(r.mapId).boxes.some(
-              (b) =>
-                Math.abs(g.x - b.x) < b.w / 2 + 0.1 &&
-                Math.abs(g.y - b.y) < b.h / 2 + 0.1 &&
-                Math.abs(g.z - b.z) < b.d / 2 + 0.1,
-            )
-          ) {
-            g[a] = old;
-            impact = Math.max(impact, Math.abs(g["v" + a]));
-            if (a === "y" && g.vy < 0) {
-              g.vx *= 0.84;
-              g.vz *= 0.84;
-            }
-            g["v" + a] *= -0.5;
+        if (g.released === false) {
+          const owner = r.players.get(g.owner),
+            held = owner?.hp > 0 && owner.spawnId === g.ownerSpawn;
+          if (held && now < g.releaseAt) continue;
+          if (held)
+            Object.assign(g, grenadeLaunch(owner, getMap(r.mapId).boxes));
+          else {
+            if (owner)
+              Object.assign(g, { x: owner.x, y: owner.y + 0.3, z: owner.z });
+            g.vx = g.vy = g.vz = 0;
           }
+          g.released = true;
+          g.explodeAt = now + GRENADE_FUSE[g.kind];
+          this.emit(r.code, "fx", {
+            type: "grenadeRelease",
+            id: g.owner,
+            weapon: g.kind,
+            x: g.x,
+            y: g.y,
+            z: g.z,
+          });
         }
-        const floor = groundAt(g.x, g.z) + 0.12;
-        if (g.y < floor) {
-          g.y = floor;
-          impact = Math.max(impact, Math.abs(g.vy));
-          g.vy = Math.abs(g.vy) * 0.35;
-          g.vx *= 0.94;
-          g.vz *= 0.94;
-        }
+        const impact = stepGrenade(g, TICK, getMap(r.mapId).boxes);
         if (impact > 1.6 && now > (g.bounceAt || 0)) {
           this.emit(r.code, "fx", {
             type: "grenadeBounce",
@@ -986,13 +986,15 @@ export class Game {
       remaining: Math.min(this.duration, Math.max(0, r.endsAt - now)),
       openingRemaining: Math.max(0, (r.buyEndsAt || 0) - now),
       scores: r.scores,
-      grenades: r.grenades.map(({ id, kind, x, y, z }) => ({
-        id,
-        kind,
-        x,
-        y,
-        z,
-      })),
+      grenades: r.grenades
+        .filter((g) => g.released !== false)
+        .map(({ id, kind, x, y, z }) => ({
+          id,
+          kind,
+          x,
+          y,
+          z,
+        })),
       smokes: r.smokes.map((s) => ({
         ...s,
         age: now - s.start,
@@ -1016,6 +1018,7 @@ export class Game {
         yaw: p.yaw,
         pitch: p.pitch,
         crouch: p.crouch,
+        stance: p.stance,
         grounded: p.grounded,
         jumpHeld: p.jumpHeld,
         hp: p.hp,

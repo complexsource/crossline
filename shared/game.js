@@ -33,8 +33,14 @@ export function collisionCandidates(x, z, boxes = BOXES) {
     );
   return collisionCells.get(key);
 }
-export const eyeHeight = (p) => (p.crouch ? 1.03 : 1.62);
-export const playerHeight = (p) => (p.crouch ? 1.25 : 1.85);
+export const stanceBlend = (p) => {
+  const t = Number.isFinite(p.stance)
+    ? Math.max(0, Math.min(1, p.stance))
+    : Number(!!p.crouch);
+  return t * t * (3 - 2 * t);
+};
+export const eyeHeight = (p) => 1.62 - 0.59 * stanceBlend(p);
+export const playerHeight = (p) => 1.85 - 0.6 * stanceBlend(p);
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export function direction(yaw, pitch) {
   return {
@@ -57,12 +63,15 @@ export function move(p, input, dt, boxes = BOXES) {
   if (Math.max(7.5, Math.abs(p.vx), Math.abs(p.vz)) * dt < 0.65)
     boxes = collisionCandidates(p.x, p.z, boxes);
   const wasGrounded = p.grounded;
+  if (!Number.isFinite(p.stance)) p.stance = Number(!!p.crouch);
   p.yaw = input.yaw;
   p.pitch = input.pitch;
   if (input.crouch) p.crouch = true;
   else if (!boxes.some((b) => overlaps(p, b, 1.85))) p.crouch = false;
+  p.stance += clamp(Number(p.crouch) - p.stance, -dt * 6, dt * 6);
   const speed =
-    (p.crouch ? 2.6 : input.aim ? 3.3 : input.run ? 7.5 : 5.2) *
+    ((input.aim ? 3.3 : input.run ? 7.5 : 5.2) * (1 - stanceBlend(p)) +
+      2.6 * stanceBlend(p)) *
     (p.y < -0.4 ? 0.7 : 1);
   let f = (input.forward ? 1 : 0) - (input.back ? 1 : 0),
     s = (input.right ? 1 : 0) - (input.left ? 1 : 0);
@@ -74,7 +83,8 @@ export function move(p, input, dt, boxes = BOXES) {
   const accel = wasGrounded ? Math.min(1, 18 * dt) : Math.min(1, 3 * dt);
   p.vx += (tx - p.vx) * accel;
   p.vz += (tz - p.vz) * accel;
-  if (input.jump && !p.jumpHeld && p.grounded) {
+  const jumped = input.jump && !p.jumpHeld && p.grounded;
+  if (jumped) {
     p.vy = 7;
     p.grounded = false;
   }
@@ -90,6 +100,7 @@ export function move(p, input, dt, boxes = BOXES) {
       const step = { ...p, y: top };
       if (
         wasGrounded &&
+        !jumped &&
         top - p.y <= 0.3 &&
         !boxes.some((b) => overlaps(step, b))
       ) {
@@ -118,17 +129,37 @@ export function move(p, input, dt, boxes = BOXES) {
     p.vy = 0;
     p.grounded = true;
   }
+  // Keep feet attached to shallow descending steps. Do not snap jumps, falls
+  // from ledges, or pull a player through an overhead collider.
+  if (wasGrounded && !jumped && p.vy <= 0) {
+    let support = floor;
+    for (const b of boxes) {
+      const top = b.y + b.h / 2;
+      if (
+        top <= p.y + 0.001 &&
+        Math.abs(p.x - b.x) < b.w / 2 + 0.31 &&
+        Math.abs(p.z - b.z) < b.d / 2 + 0.31
+      )
+        support = Math.max(support, top);
+    }
+    const resting = { ...p, y: support };
+    if (p.y - support <= 0.3 && !boxes.some((b) => overlaps(resting, b))) {
+      p.y = support;
+      p.vy = 0;
+      p.grounded = true;
+    }
+  }
   p.x = clamp(p.x, -42.6, 42.6);
   p.z = clamp(p.z, -35.8, 35.8);
 }
-export function rayBox(o, d, b) {
+export function rayBox(o, d, b, padding = 0) {
   let near = 0,
     far = Infinity;
   for (let index = 0; index < 3; index++) {
     const axis = index === 0 ? "x" : index === 1 ? "y" : "z",
       size = index === 0 ? "w" : index === 1 ? "h" : "d";
-    const min = b[axis] - b[size] / 2,
-      max = b[axis] + b[size] / 2;
+    const min = b[axis] - b[size] / 2 - padding,
+      max = b[axis] + b[size] / 2 + padding;
     if (Math.abs(d[axis]) < 1e-8) {
       if (o[axis] < min || o[axis] > max) return Infinity;
       continue;

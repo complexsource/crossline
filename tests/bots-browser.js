@@ -94,15 +94,21 @@ try {
       hp: 100,
       grounded: true,
       crouch: false,
+      stance: 0,
       protectedUntil: 0,
       input: { ...emptyInput(), yaw },
       action: "idle",
       actionUntil: 0,
       nextFire: 0,
+      shotCooldownUntil: 0,
+      reloadAt: 0,
+      weapon: p.primary,
     });
     p.spawnId++;
     if (p.bot) resetBot(p, server.game.now());
   }
+  // The preceding free-roaming smoke/HE demo must not obstruct a staged aim test.
+  room.grenades.length = room.smokes.length = 0;
   stage(human, -14, 0);
   stage(bot, -18, Math.PI);
   bot.botState.nextThink = Infinity;

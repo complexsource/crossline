@@ -1,2 +1,197 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#131716"><meta name="description" content="Crossline. A browser multiplayer shooter for you and your friends."><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Crossline — Multiplayer FPS</title></head><body><canvas id="game"></canvas><div id="app"></div><script type="module" src="/src/main.js"></script></body></html>
+<html lang="en" class="booting">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#102c34" />
+    <meta
+      name="description"
+      content="Crossline. A browser multiplayer shooter for you and your friends."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Crossline — Multiplayer FPS</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #102c34;
+        color: #ecf0e7;
+      }
+      .booting #app,
+      .booting #game {
+        visibility: hidden;
+      }
+      #boot-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(ellipse at 50% 40%, #204953, #0a202b 72%);
+        font:
+          500 12px system-ui,
+          sans-serif;
+        text-align: center;
+        transition: opacity 0.35s;
+      }
+      #boot-screen.leaving {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .boot-card {
+        width: min(340px, 80vw);
+      }
+      .boot-kicker {
+        color: #ebbc75;
+        letter-spacing: 0.24em;
+        font-size: 10px;
+      }
+      .boot-brand {
+        font-size: 38px;
+        letter-spacing: 0.1em;
+        margin: 16px 0;
+      }
+      .boot-orbit {
+        width: 76px;
+        height: 76px;
+        margin: 0 auto 30px;
+        border: 1px solid #7ba9a950;
+        position: relative;
+        transform: rotate(45deg);
+      }
+      .boot-orbit:before,
+      .boot-orbit:after {
+        content: "";
+        position: absolute;
+        inset: 9px;
+        border: 2px solid transparent;
+        border-top-color: #ebbc75;
+        border-bottom-color: #ebbc75;
+        animation: boot-spin 2.8s linear infinite;
+      }
+      .boot-orbit:after {
+        inset: 24px;
+        background: #ebbc75;
+        border: 0;
+        animation: boot-pulse 1.6s ease-in-out infinite;
+      }
+      .boot-track {
+        height: 2px;
+        background: #78aaa930;
+        overflow: hidden;
+        margin: 24px 0;
+      }
+      .boot-track i {
+        display: block;
+        height: 100%;
+        width: 40%;
+        background: #ebbc75;
+        animation: boot-scan 1.5s ease-in-out infinite;
+      }
+      .boot-detail {
+        color: #a5bdbe;
+        line-height: 1.7;
+      }
+      .boot-retry {
+        color: #ebbc75;
+        display: inline-block;
+        margin-top: 20px;
+      }
+      #boot-retry[hidden] {
+        display: none;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes boot-pulse {
+        50% {
+          opacity: 0.3;
+          transform: scale(0.65);
+        }
+      }
+      @keyframes boot-scan {
+        from {
+          transform: translateX(-110%);
+        }
+        to {
+          transform: translateX(360%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-screen {
+          transition: none;
+        }
+        .boot-orbit:before,
+        .boot-orbit:after,
+        .boot-track i {
+          animation: none;
+        }
+        .boot-track i {
+          width: 100%;
+        }
+      }
+    </style>
+    <link
+      rel="preload"
+      href="/fonts/barlow-400.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/barlow-condensed-700.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      id="app-style"
+      rel="stylesheet"
+      href="/src/style.css"
+      media="print"
+      onload="this.media = 'all'"
+      onerror="this.dataset.failed = 'true'"
+    />
+  </head>
+  <body>
+    <div id="boot-screen" role="status" aria-live="polite">
+      <div class="boot-card">
+        <div class="boot-orbit" aria-hidden="true"></div>
+        <div class="boot-kicker">COASTAL OPERATIONS / 02</div>
+        <h1 class="boot-brand">CROSSLINE</h1>
+        <div class="boot-track" aria-hidden="true"><i></i></div>
+        <p id="boot-status" class="boot-detail">Preparing your deployment…</p>
+        <a id="boot-retry" class="boot-retry" href="/" hidden
+          >RELOAD CROSSLINE ↗</a
+        ><noscript
+          ><p>
+            JavaScript is required to play. Enable it, then reload.
+          </p></noscript
+        >
+      </div>
+    </div>
+    <canvas id="game"></canvas>
+    <div id="app"></div>
+    <script>
+      window.crosslineBootFail = function () {
+        if (!document.documentElement.classList.contains("booting")) return;
+        document.getElementById("boot-status").textContent =
+          "Loading is taking longer than expected. Check your connection and retry.";
+        document.getElementById("boot-retry").href = location.href;
+        document.getElementById("boot-retry").hidden = false;
+      };
+      window.crosslineBootTimer = setTimeout(window.crosslineBootFail, 15000);
+      addEventListener(
+        "error",
+        function (e) {
+          if (e.target?.tagName === "SCRIPT") window.crosslineBootFail();
+        },
+        true,
+      );
+    </script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

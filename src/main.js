@@ -26,7 +26,9 @@ import { effectiveQuality } from "./performance.js";
 import { unpackSnapshot } from "../shared/snapshot.js";
 import { BOT_DIFFICULTIES } from "../shared/bots.js";
 import { createBuyMenu } from "./buy-menu.js";
-import "./style.css";
+import { finishBoot } from "./boot.js";
+import { canAim } from "../shared/aim.js";
+import { requestMouseCapture } from "./pointer-lock.js";
 
 const app = document.querySelector("#app"),
   canvas = document.querySelector("#game"),
@@ -541,7 +543,7 @@ function showLoading() {
   playing = false;
   document.exitPointerLock?.();
   app.innerHTML = chrome(
-    `<main class="loading-page"><div class="loading-art"><img src="${COASTLINE.preview}" alt="COASTLINE battleground"><div><div class="eyebrow">TEAM DEATHMATCH / COASTAL OPERATIONS</div><h1>COASTLINE</h1><p>Own the angles. Watch the water.</p></div></div><div class="loading-bottom panel"><div><div class="load-label"><span id="load-label">${loadText || "Preparing deployment"}</span><b id="load-percent">0%</b></div><div class="progress"><i id="load-bar"></i></div><p class="muted">${room.players.map((p) => `${esc(p.name)} ${p.loaded ? "✓" : "…"}`).join("　 ·　 ")}</p></div><strong id="countdown">${room.state === "countdown" ? Math.ceil(room.countdown) : "02"}</strong></div><p class="loading-tip">${k("grenade")} SELECT GRENADE · LEFT CLICK TO THROW · ${k("use")} PICK UP DROPPED WEAPONS</p></main>`,
+    `<main class="loading-page"><div class="loading-art"><img src="${COASTLINE.preview}" alt="COASTLINE battleground"><div><div class="eyebrow">TEAM DEATHMATCH / COASTAL OPERATIONS</div><h1>COASTLINE</h1><p>Own the angles. Watch the water.</p></div></div><div class="loading-bottom panel"><div><div class="load-label"><span id="load-label" role="status">${loadText || "Preparing deployment"}</span><b id="load-percent">0%</b></div><div id="load-progress" class="progress" role="progressbar" aria-label="Game assets" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="load-bar"></i></div><p class="muted">${room.players.map((p) => `${esc(p.name)} ${p.loaded ? "✓" : "…"}`).join("　 ·　 ")}</p></div><strong id="countdown">${room.state === "countdown" ? Math.ceil(room.countdown) : "…"}</strong></div><p class="loading-tip">${k("grenade")} SELECT GRENADE · LEFT CLICK TO THROW · ${k("use")} PICK UP DROPPED WEAPONS</p></main>`,
   );
   updateLoading();
 }
@@ -550,6 +552,10 @@ function updateLoading() {
   $("#load-label").textContent = loadText || "Preparing deployment";
   $("#load-percent").textContent = `${Math.round(loadProgress * 100)}%`;
   $("#load-bar").style.width = `${loadProgress * 100}%`;
+  $("#load-progress").setAttribute(
+    "aria-valuenow",
+    Math.round(loadProgress * 100),
+  );
   if (loadingError && !$("#retry-loading")) {
     const button = document.createElement("button");
     button.id = "retry-loading";
@@ -681,15 +687,19 @@ function showMatch() {
   confirmationUntil = 0;
 }
 async function captureMouse() {
-  await sound.unlock();
+  // Keep pointer-lock inside the trusted click/key gesture; a suspended audio
+  // device must not delay mouse capture or consume that activation.
+  sound
+    .unlock()
+    .catch(() => toast("Audio is unavailable. You can still play."));
   try {
-    await canvas.requestPointerLock({ unadjustedMovement: true });
-  } catch {
-    try {
-      await canvas.requestPointerLock();
-    } catch {
-      toast("Mouse capture was blocked. Click Enter match again.");
-    }
+    await requestMouseCapture(canvas);
+  } catch (error) {
+    toast(
+      /too many pointer lock requests/i.test(error?.message || "")
+        ? "Mouse-capture limit reached. Wait a few seconds, then click Enter match."
+        : "Mouse capture was blocked. Click Enter match again.",
+    );
   }
 }
 function updateServerStatus(connected) {
@@ -838,7 +848,13 @@ socket.on("fx", (event) => {
       pan,
     });
   else if (
-    ["explosion", "flashbang", "smoke", "grenadeBounce"].includes(event.type)
+    [
+      "explosion",
+      "flashbang",
+      "smoke",
+      "grenadeBounce",
+      "grenadeRelease",
+    ].includes(event.type)
   )
     sound.play(event.type, { volume: Math.max(0.03, 1 - distance / 45), pan });
   else if (event.id === socket.id || event.type === "pickup")
@@ -848,6 +864,11 @@ socket.on("hit", (data) => {
   hitUntil = performance.now() + 150;
   $("#hitmarker")?.classList.toggle("headshot", data.headshot);
   sound.play(data.killed ? "kill" : data.headshot ? "headshot" : "hit");
+  if (data.weapon === "he" && !data.killed) {
+    confirmationUntil = performance.now() + 1100;
+    if ($("#confirmation"))
+      $("#confirmation").textContent = `✹ HE HIT · ${data.damage} DAMAGE`;
+  }
   if (data.killed) {
     confirmationUntil = performance.now() + 1300;
     if ($("#confirmation"))
@@ -911,10 +932,11 @@ document.addEventListener("visibilitychange", () => {
 });
 document.addEventListener("mousemove", (e) => {
   if (!locked || !playing || !local || local.hp <= 0) return;
-  const factor = input.aim
-    ? settings.aimSensitivity *
-      (WEAPONS[local.weapon].type === "SNIPER" ? 0.4 : 1)
-    : 1;
+  const factor =
+    input.aim && canAim(local)
+      ? settings.aimSensitivity *
+        (WEAPONS[local.weapon].type === "SNIPER" ? 0.4 : 1)
+      : 1;
   input.yaw -= e.movementX * settings.sensitivity * factor;
   input.pitch = Math.max(
     -1.48,
@@ -979,7 +1001,7 @@ function control(code, down, repeat = false) {
         value: {
           yaw: input.yaw,
           pitch: input.pitch,
-          aim: input.aim,
+          aim: input.aim && canAim(local),
           spawnId: local.spawnId,
           weapon: local.weapon,
           fireEpoch: local.fireEpoch,
@@ -1138,8 +1160,9 @@ function updateHud(now) {
   );
   $("#health-fill").style.width = `${local.hp}%`;
   $("#death").classList.toggle("visible", local.hp <= 0);
-  const scope = input.aim && w.type === "SNIPER" && local.hp > 0 && locked;
+  const scope = input.aim && w.scoped && canAim(local) && locked;
   $("#scope").classList.toggle("visible", scope);
+  $("#scope").classList.toggle("optic", w.type !== "SNIPER");
   $("#crosshair").classList.toggle("hidden", local.hp <= 0 || !locked || scope);
   $("#crosshair").setAttribute(
     "style",
@@ -1237,6 +1260,7 @@ function advanceFrame(now) {
       if (local.hp > 0) {
         const cmd = {
           ...input,
+          aim: input.aim && canAim(local),
           seq: ++seq,
           spawnId: local.spawnId,
           fireEpoch: local.fireEpoch,
@@ -1290,7 +1314,9 @@ function advanceFrame(now) {
         surface: surfaceAt(local.x, local.z),
         volume: local.crouch ? 0.25 : 0.7,
       });
-      stepAt = now + (input.run ? 300 : 410);
+      stepAt =
+        now +
+        Math.max(280, Math.min(760, 2050 / Math.hypot(local.vx, local.vz)));
     }
     for (const a of ["x", "y", "z"]) correction[a] *= Math.exp(-15 * dt);
   }
@@ -1315,7 +1341,7 @@ function advanceFrame(now) {
           }
         : null,
       playing,
-      input.aim && locked,
+      input.aim && locked && canAim(local),
     );
     renderAt = now;
   }
@@ -1351,4 +1377,5 @@ function advanceFrame(now) {
         : 0;
 }
 showHome();
+finishBoot();
 requestAnimationFrame(frame);

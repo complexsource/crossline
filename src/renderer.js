@@ -11,13 +11,15 @@ import {
   animatePlayer,
   disposeModel,
 } from "./models.js";
-import { WEAPONS, eyeHeight } from "../shared/game.js";
+import { WEAPONS } from "../shared/game.js";
 import { GRENADE_THROW_SECONDS } from "../shared/actions.js";
 import { groundAt } from "../shared/maps.js";
 import { smokeVolume } from "./smoke.js";
 import { assetMaterials, setCharacterDetail, hasAsset } from "./assets.js";
 import { TEAMS } from "../shared/teams.js";
-import { weaponPose, reloadPose, smooth } from "./weapon-motion.js";
+import { weaponPose, reloadPose, smooth, throwPose } from "./weapon-motion.js";
+import { canAim, aimFov } from "../shared/aim.js";
+import { CameraMotion } from "./camera-motion.js";
 import {
   QUALITY,
   effectiveQuality,
@@ -86,10 +88,10 @@ export class Renderer {
     this.kick = 0;
     this.weapon = "";
     this.aimBlend = 0;
+    this.cameraMotion = new CameraMotion();
     this.sway = new THREE.Vector2();
     this.lastLook = null;
     this.landing = 0;
-    this.wasGrounded = true;
     this.throwUntil = 0;
     this.spawnId = 0;
     this.quality = effectiveQuality(options.quality);
@@ -426,7 +428,10 @@ export class Renderer {
       const distance = this.camera.position.distanceTo(
           new THREE.Vector3(p.x, p.y, p.z),
         ),
-        low = distance > (mesh?.userData.lowDetail ? 20 : 28);
+        low =
+          (distance * Math.tan((this.camera.fov * Math.PI) / 360)) /
+            Math.tan((78 * Math.PI) / 360) >
+          (mesh?.userData.lowDetail ? 20 : 28);
       if (mesh && mesh.userData.lowDetail !== low) {
         if (setCharacterDetail(mesh, TEAMS[p.team].model + (low ? "-lod" : "")))
           mesh.userData.lowDetail = low;
@@ -722,6 +727,11 @@ export class Renderer {
     }
     if (event.type === "flashbang") {
       this.lightFlash(event, 0xecf6ff, 35, 10, 0.16);
+      const flare = this.effectMesh("flare");
+      flare.position.set(event.x, event.y, event.z);
+      flare.material.color.setHex(0xecf6ff);
+      flare.scale.setScalar(2.8);
+      this.addEffect(flare, 0.18, { expand: 8 });
       for (let i = 0; i < 7; i++) this.particle(event, 0xe4e7d8, 0.2, 2);
     }
     if (event.type === "explosion" || event.type === "bombExplosion") {
@@ -738,7 +748,7 @@ export class Renderer {
                 18,
           ),
       );
-      for (let i = 0; i < (this.quality === "low" ? 15 : 40); i++)
+      for (let i = 0; i < (this.quality === "low" ? 12 : 26); i++)
         this.particle(
           event,
           i % 3 === 0 ? 0x6b6b60 : i % 2 ? 0xffbb52 : 0xe66b2f,
@@ -755,11 +765,31 @@ export class Renderer {
           2 * power,
           2.3,
         );
+      // Pressure/dust bloom reuses the warmed sprite pool. Keep GPU budgets
+      // bounded and preserve essential explosion feedback even on Low.
+      if (this.options.effects !== false && this.quality !== "low")
+        for (let i = 0; i < 6; i++) {
+          const angle = (i * Math.PI) / 3,
+            dust = this.effectMesh("smoke");
+          dust.material.color.setHex(0xb0a48b);
+          dust.position.set(event.x, event.y + 0.18, event.z);
+          dust.scale.setScalar(0.8 * power);
+          this.addEffect(dust, 0.8, {
+            smoke: true,
+            opacity: 0.22,
+            v: new THREE.Vector3(
+              Math.cos(angle) * 3,
+              0.25,
+              Math.sin(angle) * 3,
+            ),
+            expand: 0.8,
+          });
+        }
       const flare = this.effectMesh("flare");
       flare.material.color.setHex(0xffb564);
       flare.position.set(event.x, event.y + 0.3, event.z);
       flare.scale.setScalar(3.6 * power);
-      this.addEffect(flare, 0.22);
+      this.addEffect(flare, 0.22, { expand: 6 * power });
       this.lightFlash(event, 0xffa533, 45 * power, 12 * power, 0.25);
     }
   }
@@ -796,6 +826,7 @@ export class Renderer {
     });
   }
   render(dt, local, playing, aim) {
+    aim = !!aim && canAim(local);
     this.renderer.info.reset();
     this.time += dt;
     const t = this.time;
@@ -813,8 +844,8 @@ export class Renderer {
     this.landing *= Math.exp(-14 * dt);
     for (const p of this.players.values()) p.visible = playing;
     if (playing && local) {
-      if (!this.wasGrounded && local.grounded) this.landing = 0.045;
-      this.wasGrounded = local.grounded;
+      const cameraMotion = this.cameraMotion.update(local, dt, aim);
+      this.landing = cameraMotion.land;
       if (this.lastLook && this.spawnId === local.spawnId) {
         const yaw = Math.atan2(
           Math.sin(local.yaw - this.lastLook.x),
@@ -835,29 +866,18 @@ export class Renderer {
       this.lastLook ||= new THREE.Vector2();
       this.lastLook.set(local.yaw, local.pitch);
       this.spawnId = local.spawnId;
-      this.camera.position.set(
-        local.x,
-        local.y +
-          eyeHeight(local) +
-          (local.hp > 0
-            ? Math.sin(t * 11) *
-              Math.min(0.022, Math.hypot(local.vx, local.vz) * 0.004)
-            : -0.5) -
-          this.landing,
-        local.z,
-      );
+      this.camera.position.set(local.x, cameraMotion.y, local.z);
       this.camera.rotation.set(
         local.pitch,
         local.yaw,
-        local.hp > 0 ? Math.sin(t * 73) * this.shake : 0.2,
+        local.hp > 0
+          ? Math.sin(t * 73) * this.shake
+          : this.cameraMotion.death * 0.4,
         "YXZ",
       );
-      const fov =
-        aim && local.hp > 0
-          ? WEAPONS[local.weapon].aimFov
-          : this.options.fov || 78;
+      const fov = aimFov(local, aim, this.options.fov || 78);
       if (Math.abs(fov - this.camera.fov) > 0.01) {
-        this.camera.fov += (fov - this.camera.fov) * Math.min(1, dt * 14);
+        this.camera.fov += (fov - this.camera.fov) * (1 - Math.exp(-14 * dt));
         this.camera.updateProjectionMatrix();
       }
       const throwing = this.throwUntil > t,
@@ -865,12 +885,8 @@ export class Renderer {
         visualWeapon = hasAsset(requestedWeapon) ? requestedWeapon : "knife",
         pose = weaponPose(visualWeapon),
         motion = reloadPose(visualWeapon, throwing ? 0 : local.reload),
-        bob =
-          Math.sin(t * 9) *
-          Math.min(0.012, Math.hypot(local.vx, local.vz) * 0.002),
-        throwPhase = throwing
-          ? smooth(1 - (this.throwUntil - t) / GRENADE_THROW_SECONDS)
-          : 0;
+        bob = cameraMotion.bob,
+        throwingPose = throwing ? throwPose(this.throwUntil - t) : null;
       this.setWeapon(visualWeapon, local.team);
       this.aimBlend +=
         ((aim && !pose.equipment ? 1 : 0) - this.aimBlend) *
@@ -879,24 +895,25 @@ export class Renderer {
       this.gun.scale.setScalar(pose.scale);
       this.gun.position.set(
         THREE.MathUtils.lerp(pose.position[0], 0, ads) -
-          this.sway.x * (1 - ads * 0.7),
+          this.sway.x * (1 - ads * 0.7) +
+          (throwingPose?.position[0] || 0),
         THREE.MathUtils.lerp(pose.position[1], -pose.sight * pose.scale, ads) +
           bob * (1 - ads * 0.8) -
           motion.tilt * 0.09 -
-          this.gun.userData.draw * 0.22 -
+          smooth(this.gun.userData.draw) * 0.22 -
           this.sway.y -
           this.landing +
-          Math.sin(throwPhase * Math.PI) * 0.13,
+          (throwingPose?.position[1] || 0),
         pose.position[2] +
           this.kick * 0.075 * pose.kick +
-          motion.seat * -0.012 -
-          throwPhase * 0.42,
+          motion.seat * -0.012 +
+          (throwingPose?.position[2] || 0),
       );
       this.gun.rotation.set(
         this.kick * 0.1 * pose.kick -
           motion.tilt * 0.23 +
-          this.gun.userData.draw * 0.32 +
-          throwPhase * 0.8,
+          smooth(this.gun.userData.draw) * 0.32 +
+          (throwingPose?.pitch || 0),
         local.action === "slash"
           ? Math.sin((local.actionTime / 0.32) * Math.PI) * -0.9
           : this.sway.x * 0.6 + (pose.equipment ? 0 : pose.yaw * (1 - ads)),
@@ -905,7 +922,7 @@ export class Renderer {
       this.gun.visible =
         hasAsset(requestedWeapon) &&
         local.hp > 0 &&
-        !(aim && WEAPONS[local.weapon].type === "SNIPER");
+        !(aim && WEAPONS[local.weapon].scoped);
       this.gun.userData.flash.visible =
         this.flashUntil > t && !pose.equipment && local.weapon !== "knife";
       this.muzzleLight.intensity = this.gun.userData.flash.visible
@@ -970,17 +987,30 @@ export class Renderer {
       u.poseElapsed = (u.poseElapsed || 0) + dt;
       this.playerBounds.center.copy(m.position).y += 1;
       const inView = this.playerFrustum.intersectsSphere(this.playerBounds);
-      if ((inView && distance < 20) || u.poseElapsed >= (inView ? 0.05 : 0.2)) {
+      const apparentDistance =
+        (distance * Math.tan((this.camera.fov * Math.PI) / 360)) /
+        Math.tan((78 * Math.PI) / 360);
+      if (
+        (inView && apparentDistance < 20) ||
+        u.poseElapsed >= (inView ? 0.05 : 0.2)
+      ) {
         animatePlayer(m, poseState, t, u.poseElapsed);
         u.poseElapsed = 0;
       }
       // Distant opponents retain their silhouette; only their costly tiny gear is culled.
       for (const part of u.lodMeshes)
         part.geometry =
-          distance > (this.quality === "low" ? 10 : 24)
+          apparentDistance > (this.quality === "low" ? 10 : 24)
             ? part.userData.lowGeometry
             : part.userData.highGeometry;
-      u.gun.visible = distance < this.settings.detail;
+      if (u.gun)
+        u.gun.visible =
+          hasAsset(action?.weapon || p.weapon) &&
+          apparentDistance < this.settings.detail &&
+          !(
+            poseState.action === "throw" &&
+            throwPose(poseState.actionTime).released
+          );
       u.label.visible = p.hp > 0 && distance < 35;
     }
     for (const m of this.grenades.values()) {
@@ -1023,6 +1053,7 @@ export class Renderer {
           }
         }
         if (e.smoke) e.mesh.scale.multiplyScalar(1 + dt * 0.9);
+        if (e.expand) e.mesh.scale.addScalar(e.expand * dt);
         if (e.mesh.material && !e.sharedMaterial)
           e.mesh.material.opacity = e.decal
             ? Math.min(1, e.life / 2)

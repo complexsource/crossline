@@ -1,16 +1,13 @@
 import { BOT_DIFFICULTIES } from "../shared/bots.js";
-import {
-  TICK,
-  direction,
-  eyeHeight,
-  emptyInput,
-  clamp,
-  collisionCandidates,
-} from "../shared/game.js";
-import { groundAt } from "../shared/maps.js";
+import { TICK, eyeHeight, emptyInput, clamp } from "../shared/game.js";
 import { WEAPONS, GRENADES, isFirearm } from "../shared/weapons.js";
 import { actionBlocksFire } from "../shared/actions.js";
 import { getBotNavigation } from "./bot-navigation.js";
+import {
+  grenadeLaunch,
+  stepGrenade,
+  GRENADE_FUSE,
+} from "../shared/grenades.js";
 
 const angle = (value) => Math.atan2(Math.sin(value), Math.cos(value));
 const eye = (p) => ({ x: p.x, y: p.y + eyeHeight(p), z: p.z });
@@ -182,40 +179,9 @@ function decide(game, room, p, now, config) {
 // Bounded local trajectory preview. Actual projectiles still use Game's
 // collision/fuse/damage code; the preview never damages or moves a player.
 function landing(p, yaw, pitch, kind) {
-  const d = direction(yaw, pitch),
-    g = { ...eye(p), vx: d.x * 13, vy: d.y * 13 + 4, vz: d.z * 13 };
-  const ticks = Math.ceil(
-    (kind === "he" ? 2 : kind === "flash" ? 1.7 : 2.3) / TICK,
-  );
-  for (let i = 0; i < ticks; i++) {
-    g.vy -= 16 * TICK;
-    for (const axis of ["x", "y", "z"]) {
-      const old = g[axis];
-      g[axis] += g["v" + axis] * TICK;
-      if (
-        collisionCandidates(g.x, g.z).some(
-          (b) =>
-            Math.abs(g.x - b.x) < b.w / 2 + 0.1 &&
-            Math.abs(g.y - b.y) < b.h / 2 + 0.1 &&
-            Math.abs(g.z - b.z) < b.d / 2 + 0.1,
-        )
-      ) {
-        g[axis] = old;
-        if (axis === "y" && g.vy < 0) {
-          g.vx *= 0.84;
-          g.vz *= 0.84;
-        }
-        g["v" + axis] *= -0.5;
-      }
-    }
-    const floor = groundAt(g.x, g.z) + 0.12;
-    if (g.y < floor) {
-      g.y = floor;
-      g.vy = Math.abs(g.vy) * 0.35;
-      g.vx *= 0.94;
-      g.vz *= 0.94;
-    }
-  }
+  const g = grenadeLaunch({ ...p, yaw, pitch });
+  for (let i = 0; i < Math.ceil(GRENADE_FUSE[kind] / TICK); i++)
+    stepGrenade(g, TICK);
   return g;
 }
 export function planBotGrenade(game, room, p, now = game.now()) {
@@ -225,6 +191,7 @@ export function planBotGrenade(game, room, p, now = game.now()) {
     !BOT_DIFFICULTIES[p.difficulty]?.grenades ||
     !target ||
     now < ai.nextGrenade ||
+    now < ai.reactAt ||
     actionBlocksFire(p, now) ||
     room.grenades.length >= 3 ||
     p.flashUntil > now
@@ -232,7 +199,7 @@ export function planBotGrenade(game, room, p, now = game.now()) {
     return null;
   ai.nextGrenade = now + 3; // Failed tactical searches are also rate limited.
   const dist = distance(p, target);
-  if (dist < 9 || dist > 24 || now < ai.reactAt) return null;
+  if (dist < 9 || dist > 24) return null;
   const kind =
     p.hp < 45 && p.grenades.smoke > 0 && room.smokes.length < 3
       ? "smoke"
@@ -253,7 +220,7 @@ export function planBotGrenade(game, room, p, now = game.now()) {
   const yaw = Math.atan2(p.x - goal.x, p.z - goal.z);
   let best = null,
     score = Infinity;
-  for (const pitch of [-0.12, 0.08, 0.28, 0.48, 0.68]) {
+  for (const pitch of [-0.5, -0.3, -0.12, 0.08, 0.28, 0.48, 0.68]) {
     const end = landing(p, yaw, pitch, kind),
       error = Math.hypot(end.x - goal.x, end.z - goal.z, end.y - goal.y - 0.8);
     if (error > 4 || error >= score) continue;
@@ -290,7 +257,12 @@ export function updateBot(game, room, p, now) {
   if (!config || p.hp <= 0) return;
   if (!p.botState) resetBot(p, now);
   const ai = p.botState;
-  if (!ai.bought && game.now() + 0.1 < p.buyUntil) {
+  if (
+    !ai.bought &&
+    now >= p.nextBuy &&
+    game.now() + 0.1 < p.buyUntil &&
+    !actionBlocksFire(p, now)
+  ) {
     // Default team kit is always usable. Re-equip the previous chosen kit on
     // respawn through the same authoritative buy validation as human players.
     try {
@@ -299,9 +271,9 @@ export function updateBot(game, room, p, now) {
         spawnId: p.spawnId,
         epoch: room.loadEpoch,
       });
-    } catch (error) {
-      // An expired window after a server stall is a normal rejected purchase.
-      if (game.now() < p.buyUntil) throw error;
+    } catch {
+      // Buying is optional: a rejected/stale selection leaves the valid default
+      // kit intact. Never let a bot's purchase rejection stop every room's tick.
     }
     ai.bought = true;
   }
@@ -350,7 +322,11 @@ export function updateBot(game, room, p, now) {
     }
   }
   if (ai.grenade) {
-    if (ai.grenade.expires < now || !p.grenades[ai.grenade.kind])
+    const windingUp = p.action === "throw" && now < p.actionUntil;
+    if (
+      !windingUp &&
+      (ai.grenade.expires < now || !p.grenades[ai.grenade.kind])
+    )
       ai.grenade = null;
     else {
       wantedYaw = ai.grenade.yaw;

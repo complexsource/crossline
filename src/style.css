@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Barlow:wght@400;500;600;700;800&display=swap");
+@import url("/fonts/fonts.css");
 :root {
   font-family: "Barlow", Arial, sans-serif;
   font-synthesis: none;
@@ -1135,18 +1135,30 @@ td small {
   transform: translate(-50%, -50%);
   display: var(--dot);
 }
+.map-label,
+.match-score,
+#kill-feed,
+.buy-prompt,
+.hud-bottom {
+  z-index: 1;
+}
 #scope {
   position: absolute;
   inset: 0;
-  display: none;
+  display: block;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease-out;
+  --scope-radius: 34vmin;
   background: radial-gradient(
     circle at center,
-    transparent 30vh,
-    #020908 30.3vh
+    transparent calc(var(--scope-radius) - 2px),
+    #152a2c calc(var(--scope-radius) - 1px),
+    #020908 var(--scope-radius)
   );
 }
 #scope.visible {
-  display: block;
+  opacity: 1;
 }
 #scope:before,
 #scope:after {
@@ -1155,16 +1167,16 @@ td small {
   background: #0c1b17;
 }
 #scope:before {
-  left: calc(50% - 30vh);
+  left: calc(50% - var(--scope-radius));
   top: 50%;
   height: 1px;
-  width: 60vh;
+  width: calc(2 * var(--scope-radius));
 }
 #scope:after {
-  top: calc(50% - 30vh);
+  top: calc(50% - var(--scope-radius));
   left: 50%;
   width: 1px;
-  height: 60vh;
+  height: calc(2 * var(--scope-radius));
 }
 #scope i {
   position: absolute;
@@ -1174,6 +1186,75 @@ td small {
   height: 3px;
   transform: translate(-50%, -50%);
   background: #d07756;
+}
+#scope.optic {
+  --scope-radius: 39vmin;
+}
+#scope.optic:before {
+  width: 6vmin;
+  left: calc(50% - 3vmin);
+  background: #f09a6599;
+}
+#scope.optic:after {
+  height: 6vmin;
+  top: calc(50% - 3vmin);
+  background: #f09a6599;
+}
+#scope.optic i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  box-shadow: 0 0 3px #070b0a;
+}
+.loading-art {
+  isolation: isolate;
+}
+.loading-art:after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 40%,
+    #b0f4ee15 49%,
+    transparent 58%
+  );
+  background-size: 250% 100%;
+  animation: deployment-scan 5s ease-in-out infinite;
+}
+.progress i {
+  position: relative;
+  overflow: hidden;
+  transition: width 0.28s ease-out;
+}
+.progress i:after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, #fff8, transparent);
+  animation: boot-scan 1.7s ease-in-out infinite;
+}
+.loading-bottom {
+  box-shadow: 0 18px 65px #04101766;
+}
+@keyframes deployment-scan {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loading-art:after,
+  .progress i:after {
+    animation: none;
+  }
+  .progress i,
+  #scope {
+    transition: none;
+  }
 }
 #hitmarker {
   position: absolute;
