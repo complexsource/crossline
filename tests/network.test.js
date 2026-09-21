@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import { io as connect } from "socket.io-client";
 import { createGameServer } from "../server/index.js";
 import { emptyInput } from "../shared/game.js";
+import { unpackSnapshot } from "../shared/snapshot.js";
 
 test("real sockets: rooms, ten clients, snapshots, input authority, separate-room isolation, results and disconnect", async () => {
   const server = await createGameServer({
     production: true,
     duration: 1.2,
     countdown: 0.1,
+    openingBuySeconds: 0,
   });
   await new Promise((resolve) => server.http.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.http.address().port}`,
@@ -35,6 +37,7 @@ test("real sockets: rooms, ten clients, snapshots, input authority, separate-roo
         reject(Error("Timed out: " + event));
       }, 3000);
       function on(data) {
+        if (event === "state") data = unpackSnapshot(data);
         if (predicate(data)) {
           clearTimeout(timeout);
           c.off(event, on);

@@ -52,7 +52,7 @@ test("loading timeout and disconnect return safely to the same room", () => {
   const f = fixture({ loadHandshake: true });
   f.ready();
   f.game.start("a");
-  f.advance(46);
+  f.advance(121);
   f.game.tick();
   assert.equal(f.room.state, "lobby");
   assert.ok(f.room.notice);
@@ -168,7 +168,7 @@ test("HE, Flash and Smoke inventory, effects and lifetime are authoritative", ()
   assert.equal(a.grenades.he, 0);
   assert.equal(f.room.grenades.length, 1);
   assert.equal(a.weapon, "he", "throw keeps grenade until animation ends");
-  f.advance(0.56);
+  f.advance(0.76);
   f.game.tick();
   assert.equal(a.weapon, a.primary);
   b.hp = 10;
@@ -274,7 +274,9 @@ test("a short click between simulation ticks fires once without bypassing cadenc
     pitch: 0,
     aim: false,
     spawnId: a.spawnId,
-    fireEpoch: a.fireEpoch, weapon: a.weapon, pressId: 1,
+    fireEpoch: a.fireEpoch,
+    weapon: a.weapon,
+    pressId: 1,
   });
   f.game.tick();
   assert.equal(a.ammo[a.weapon].mag, mag - 1);
@@ -283,7 +285,9 @@ test("a short click between simulation ticks fires once without bypassing cadenc
     pitch: 0,
     aim: false,
     spawnId: a.spawnId,
-    fireEpoch: a.fireEpoch, weapon: a.weapon, pressId: 2,
+    fireEpoch: a.fireEpoch,
+    weapon: a.weapon,
+    pressId: 2,
   });
   f.game.tick();
   assert.equal(a.ammo[a.weapon].mag, mag - 1);

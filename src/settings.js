@@ -23,12 +23,14 @@ export const BINDINGS = {
   cycleDown: "WheelDown",
   scoreboard: "Tab",
   chat: "KeyY",
+  buy: "KeyB",
 };
 export const DEFAULTS = {
   sensitivity: 0.0021,
   aimSensitivity: 0.6,
   invert: false,
-  quality: "high",
+  quality: "auto",
+  adaptiveResolution: true,
   resolution: 1,
   shadows: true,
   effects: true,
@@ -60,6 +62,19 @@ export function readSettings(storage = globalThis.localStorage) {
     for (const [k, v] of Object.entries(raw))
       if (k in DEFAULTS && k !== "bindings" && typeof v === typeof DEFAULTS[k])
         s[k] = v;
+    // Adding the Buy Menu must not steal an existing custom B binding.
+    if (
+      raw.bindings &&
+      !raw.bindings.buy &&
+      Object.values(raw.bindings).includes("KeyB")
+    ) {
+      s.bindings.buy =
+        ["KeyN", "KeyV", "KeyM", "KeyP", "KeyO", "KeyL"].find(
+          (code) =>
+            !Object.values(raw.bindings).includes(code) &&
+            !Object.values(BINDINGS).includes(code),
+        ) || "F8";
+    }
     if (raw.bindings)
       for (const [k, v] of Object.entries(raw.bindings))
         if (
@@ -70,6 +85,20 @@ export function readSettings(storage = globalThis.localStorage) {
           )
         )
           s.bindings[k] = v;
+    if (!["auto", "low", "medium", "high", "ultra"].includes(s.quality))
+      s.quality = "auto";
+    if (!["low", "high"].includes(s.textures)) s.textures = "high";
+    for (const [key, min, max] of [
+      ["resolution", 0.5, 1.5],
+      ["fov", 65, 100],
+      ["fpsLimit", 0, 144],
+      ["sensitivity", 0.0005, 0.006],
+      ["aimSensitivity", 0.1, 1],
+      ...["master", "guns", "environment", "music"].map((k) => [k, 0, 1]),
+    ])
+      s[key] = Number.isFinite(s[key])
+        ? Math.max(min, Math.min(max, s[key]))
+        : DEFAULTS[key];
     return s;
   } catch {
     return { ...DEFAULTS, bindings: { ...BINDINGS } };
@@ -120,7 +149,7 @@ const groups = {
     "cycleUp",
     "cycleDown",
   ],
-  GAME: ["scoreboard", "chat"],
+  GAME: ["buy", "scoreboard", "chat"],
 };
 let capture = null,
   settingsDialog = null;
@@ -157,7 +186,7 @@ export function showSettings(category = "controls", onClose = () => {}) {
         "",
       )}<p class="muted">ESC always releases the mouse. Objective equipment is unavailable in Team Deathmatch.</p><button id="reset-bindings">RESET CONTROLS</button>`;
   if (category === "graphics")
-    panel.innerHTML = `<div class="setting-grid">${select("quality", "Graphics preset", ["low", "medium", "high", "ultra"])}${range("resolution", "Resolution scale", 0.5, 1.5, 0.1)}${range("fov", "Field of view", 65, 100, 1)}${select("fpsLimit", "FPS limit (0 = display refresh)", [0, 30, 60, 90, 120, 144])}${select("textures", "Texture detail / filtering", ["low", "high"])}${check("shadows", "Shadows")}${check("effects", "Decorative effects")}${check("antialias", "Anti-aliasing (takes effect after page reload)")}</div><p class="muted">VSync is controlled by your browser and display. Smoke visibility does not change with quality settings.</p><button id="fullscreen">TOGGLE FULLSCREEN ↗</button>`;
+    panel.innerHTML = `<div class="setting-grid">${select("quality", "Graphics preset", ["auto", "low", "medium", "high", "ultra"])}${range("resolution", "Maximum resolution scale", 0.5, 1.5, 0.1)}${check("adaptiveResolution", "Adaptive resolution (recommended)")}${range("fov", "Field of view", 65, 100, 1)}${select("fpsLimit", "FPS limit (0 = display refresh)", [0, 30, 60, 90, 120, 144])}${select("textures", "Texture detail / filtering", ["low", "high"])}${check("shadows", "Shadows")}${check("effects", "Decorative effects")}${check("antialias", "Anti-aliasing (takes effect after page reload)")}</div><p class="muted">Auto starts with a conservative GPU budget. Adaptive resolution reduces render size during sustained slow frames. VSync is controlled by your browser. Smoke visibility is identical on all presets.</p><button id="fullscreen">TOGGLE FULLSCREEN ↗</button>`;
   if (category === "audio")
     panel.innerHTML = `<div class="setting-grid">${range("master", "Master volume", 0, 1, 0.05)}${range("guns", "Weapons & equipment", 0, 1, 0.05)}${range("environment", "Ocean & footsteps", 0, 1, 0.05)}${range("music", "Menu ambience", 0, 1, 0.05)}</div><p class="muted">Spatial gunfire follows the shooter. Voice chat is not included in V2.</p>`;
   if (category === "gameplay")
@@ -168,6 +197,13 @@ export function showSettings(category = "controls", onClose = () => {}) {
     settingsDialog = null;
     onClose();
   };
+  if (category === "graphics") {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent =
+      "Model texture resolution is chosen when assets load. Reload the page to increase an already-loaded texture budget; resolution, shadows and effects update immediately.";
+    panel.append(note);
+  }
   modal.querySelector("#settings-close").onclick = close;
   modal.querySelectorAll("[data-category]").forEach(
     (b) =>

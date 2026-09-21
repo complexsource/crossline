@@ -1,4 +1,8 @@
 import { WEAPONS } from "../shared/weapons.js";
+import {
+  GRENADE_THROW_SECONDS,
+  GRENADE_RELEASE_SECONDS,
+} from "../shared/actions.js";
 
 const clamp = (v) => Math.max(0, Math.min(1, v));
 export const smooth = (v) => {
@@ -160,6 +164,37 @@ export function reloadPose(id, remaining) {
   };
 }
 
+// Pull pin -> compact wind-up -> acceleration/release -> follow-through.
+// Hermite easing is continuous at each beat and shared by first/third person.
+export function throwPose(remaining) {
+  const phase = clamp(1 - remaining / GRENADE_THROW_SECONDS);
+  const beats = [
+    [0, 0, 0, 0, 0],
+    [0.22, -0.025, 0.035, 0.085, -0.22],
+    [0.4, 0.045, 0.09, 0.055, -0.58],
+    [0.55, -0.04, 0.045, -0.22, 0.7],
+    [0.78, -0.075, -0.13, -0.3, 0.95],
+    [1, 0, -0.2, 0.05, 0.25],
+  ];
+  let index = 1;
+  while (index < beats.length - 1 && phase > beats[index][0]) index++;
+  const a = beats[index - 1],
+    b = beats[index],
+    blend = smooth((phase - a[0]) / (b[0] - a[0]));
+  const values = a.slice(1).map((v, i) => v + (b[i + 1] - v) * blend);
+  const release = GRENADE_RELEASE_SECONDS / GRENADE_THROW_SECONDS;
+  return {
+    phase,
+    position: values.slice(0, 3),
+    pitch: values[3],
+    released: phase >= release,
+    pin: smooth(phase / 0.22),
+    reach: smooth(phase / 0.1) * (1 - smooth((phase - 0.23) / 0.14)),
+    arm: smooth(phase / 0.2) * (1 - smooth((phase - 0.78) / 0.22)),
+    swing: smooth((phase - 0.36) / 0.26),
+  };
+}
+
 // Future objective presentation is separate from the TDM inventory/state machine.
 export function equipmentPose(state, progress = 0) {
   const t = clamp(progress);
@@ -167,7 +202,11 @@ export function equipmentPose(state, progress = 0) {
     return {
       lower: smooth(t) * 0.2,
       pitch: -0.42 * smooth(t),
-      tap: Math.sin(t * Math.PI * 8) * 0.025,
+      tap:
+        Math.sin(t * Math.PI * 8) *
+        0.018 *
+        smooth(t / 0.15) *
+        (1 - smooth((t - 0.85) / 0.15)),
       pulse: 0,
     };
   if (state === "dropped" || state === "planted")

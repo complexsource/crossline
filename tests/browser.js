@@ -5,7 +5,11 @@ import { createGameServer } from "../server/index.js";
 import { emptyInput } from "../shared/game.js";
 
 // Independent production server: never alter a user's live room.
-const server = await createGameServer({ production: true, countdown: 0.3 });
+const server = await createGameServer({
+  production: true,
+  countdown: 0.3,
+  openingBuySeconds: 0,
+});
 await new Promise((resolve) => server.http.listen(0, "127.0.0.1", resolve));
 const url = `http://127.0.0.1:${server.http.address().port}`;
 const browser = await chromium.launch({
@@ -61,8 +65,7 @@ try {
   await b.locator("#join").click();
   await b.locator("#ready").waitFor();
   await b.locator('[data-team="soldiers"]').click();
-  await b.locator("#primary").selectOption("awp");
-  await a.locator("#primary").selectOption("m4a4");
+  assert.equal(await a.locator("#primary, #secondary").count(), 0);
   await b.locator("#ready").click();
   await a.locator("#ready").click();
   await a.waitForFunction(() => !document.querySelector("#start").disabled);
@@ -72,7 +75,35 @@ try {
   await a.screenshot({ path: "test-results/loading.png" });
   await a.locator("#enter").waitFor({ timeout: 90000 });
   await b.locator("#enter").waitFor({ timeout: 90000 });
-  assert.ok(heavy.length > 30);
+  const loadedModels = heavy
+    .filter((url) => url.endsWith(".glb"))
+    .map((url) => url.split("/").pop());
+  for (const id of [
+    "soldier",
+    "terrorist",
+    "soldier-lod",
+    "terrorist-lod",
+    "m4a4",
+    "ak47",
+    "glock18",
+    "usps",
+    "knife",
+    "he",
+    "flash",
+    "smoke",
+  ])
+    assert.ok(
+      loadedModels.includes(`${id}.glb`),
+      `match asset ${id} was loaded`,
+    );
+  assert.ok(
+    !loadedModels.includes("negev.glb") && !loadedModels.includes("bomb.glb"),
+    "unused loadouts/equipment are not downloaded",
+  );
+  assert.ok(
+    loadedModels.length < 18,
+    "room loads a subset, not the full arsenal",
+  );
   const room = server.game.rooms.get(code),
     pa = [...room.players.values()].find((p) => p.name === "Alpha"),
     pb = [...room.players.values()].find((p) => p.name === "Bravo");
@@ -257,6 +288,23 @@ try {
   await a.locator("#copy").waitFor();
   assert.equal(room.players.size, 2);
   assert.equal(room.code, code);
+  // A new loadout in the same room must load on demand after the first match.
+  server.game.openingBuySeconds = 20;
+  await a.locator("#ready").click();
+  await b.locator("#ready").click();
+  await a.locator("#start").click();
+  await a.locator("#enter").waitFor({ timeout: 45000 });
+  await a.locator("#pause-buy").click();
+  await a.locator('[data-buy-tab="HEAVY"]').click();
+  await a.locator('[data-buy="negev"]').click();
+  await a.waitForFunction(
+    () => document.querySelector("#weapon-name").textContent === "NEGEV",
+  );
+  assert.ok(heavy.some((url) => url.endsWith("/negev.glb")));
+  assert.equal(room.code, code);
+  room.endsAt = server.game.now() - 0.1;
+  await a.locator("#back").click();
+  await a.locator("#copy").waitFor();
   await ctx1.close();
   await b.waitForFunction(() =>
     document.querySelector(".host-name")?.textContent.includes("Bravo"),

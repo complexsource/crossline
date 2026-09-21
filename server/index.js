@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { appendFile, mkdir } from "node:fs/promises";
 import { Game } from "./game.js";
+import { packSnapshot } from "../shared/snapshot.js";
+import { getBotNavigation } from "./bot-navigation.js";
 
 export async function createGameServer({
   production = false,
@@ -13,8 +15,13 @@ export async function createGameServer({
   random,
   loadHandshake = true,
   countdown = 3,
+  openingBuySeconds,
+  respawnBuySeconds,
   statsDirectory = null,
 } = {}) {
+  // Prepare shared static routes before accepting connections. Adding the first
+  // bot must not stall another room that is already playing.
+  getBotNavigation();
   const app = express(),
     http = createServer(app);
   const io = new Server(http, {
@@ -25,13 +32,18 @@ export async function createGameServer({
   });
   let statsWrites = Promise.resolve();
   const game = new Game(
-    (target, event, data) => io.to(target).emit(event, data),
+    (target, event, data) =>
+      event === "state"
+        ? io.to(target).volatile.emit(event, packSnapshot(data))
+        : io.to(target).emit(event, data),
     {
       duration,
       now,
       random,
       loadHandshake,
       countdown,
+      openingBuySeconds,
+      respawnBuySeconds,
       onMatch: (result) => {
         if (statsDirectory)
           statsWrites = statsWrites
@@ -92,7 +104,11 @@ export async function createGameServer({
       return { code: r.code };
     });
     handle("choose", (data) => game.choose(socket.id, data));
+    handle("buy", (data) => game.buy(socket.id, data));
     handle("configure", (data) => game.configure(socket.id, data));
+    handle("addBot", (data) => game.addBot(socket.id, data));
+    handle("configureBot", (data) => game.configureBot(socket.id, data));
+    handle("removeBot", (data) => game.removeBot(socket.id, data));
     handle("start", () => game.start(socket.id));
     handle("loaded", (data) => game.loaded(socket.id, data?.epoch));
     handle("return", () => game.returnRoom(socket.id));

@@ -102,18 +102,27 @@ export class Sound {
       }
       return;
     }
+    if (type === "throw") {
+      this.clickAt(t + 0.04, 2600, volume * 0.11, pan, 0.035);
+      this.clickAt(t + 0.15, 1750, volume * 0.08, pan, 0.06);
+      return;
+    }
+    if (type === "grenadeRelease") {
+      this.clickAt(t, 620, volume * 0.15, pan, 0.17);
+      this.clickAt(t + 0.025, 1100, volume * 0.06, pan, 0.12);
+      return;
+    }
     if (
       [
         "draw",
         "pickup",
         "drop",
-        "throw",
         "bombPlant",
         "bombPickup",
         "bombDrop",
       ].includes(type)
     ) {
-      const metallic = type === "throw" ? 2700 : type === "drop" ? 540 : 1300;
+      const metallic = type === "drop" ? 540 : 1300;
       this.clickAt(t, metallic, volume * 0.12, pan, 0.035);
       this.clickAt(t + 0.065, metallic * 0.58, volume * 0.08, pan, 0.065);
       return;
@@ -246,6 +255,11 @@ export class Sound {
     }
     if (type === "flashbang")
       this.clickAt(t + 0.02, 3400, volume * 0.04, pan, 0.24, true);
+    if (boom) {
+      this.clickAt(t + 0.015, 1700, volume * 0.24, pan, 0.045);
+      this.clickAt(t + 0.16, 260, volume * 0.12, pan * 0.5, 0.42);
+      this.clickAt(t + 0.32, 510, volume * 0.055, -pan * 0.2, 0.36);
+    }
     source.onended = () => {
       this.reloadSounds.delete(source);
       source.disconnect();

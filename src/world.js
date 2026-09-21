@@ -967,8 +967,12 @@ export function buildWorld(scene) {
     meshes = [];
   details.updateMatrixWorld(true);
   details.traverse((o) => {
+    // Cheap structural supports stay with the landmark silhouette. Material
+    // batches have different bounds: culling a trunk before its leaves floats it.
+    if (o.isMesh) o.userData.decorative = !o.userData.keepSilhouette;
     if (
       o.isMesh &&
+      !o.userData.keepSilhouette &&
       !o.userData.ownedGeometry &&
       !o.userData.ownedMaterial &&
       !Array.isArray(o.material)
@@ -991,6 +995,7 @@ export function buildWorld(scene) {
       o.removeFromParent();
     });
     batch.castShadow = batch.receiveShadow = true;
+    batch.userData.decorative = true;
     batch.computeBoundingSphere();
     root.add(batch);
     meshes.push(batch);
@@ -1011,6 +1016,8 @@ export function buildWorld(scene) {
     const p = new THREE.Vector3().setFromMatrixPosition(o.matrixWorld),
       key =
         o.material.uuid +
+        "/" +
+        !!o.userData.decorative +
         "/" +
         Math.floor(p.x / 20) +
         "/" +
@@ -1044,15 +1051,32 @@ export function buildWorld(scene) {
     const mesh = new THREE.Mesh(geometry, list[0].material);
     mesh.castShadow = mesh.receiveShadow = true;
     mesh.userData.ownedGeometry = true;
+    mesh.userData.decorative = !!list[0].userData.decorative;
     root.add(mesh);
     list.forEach((o) => {
       o.removeFromParent();
       if (o.userData.ownedGeometry) o.geometry.dispose();
     });
   }
+  const decorative = [];
+  root.updateMatrixWorld(true);
+  root.traverse((o) => {
+    o.matrixAutoUpdate = false;
+    o.matrixWorldAutoUpdate = false;
+    if (!o.isMesh || !o.userData.decorative) return;
+    if (o.isInstancedMesh) o.computeBoundingSphere();
+    else if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+    const bounds = (
+      o.isInstancedMesh ? o.boundingSphere : o.geometry.boundingSphere
+    )
+      .clone()
+      .applyMatrix4(o.matrixWorld);
+    decorative.push({ mesh: o, bounds });
+  });
   return {
     root,
     details,
+    decorative,
     sun,
     map: COASTLINE,
     update(time) {

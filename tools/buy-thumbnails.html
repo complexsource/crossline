@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+  <body style="margin: 0">
+    <script type="module">
+      import * as THREE from "three";
+      import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+      import { loadAssets, instance } from "../src/assets.js";
+      import { WEAPONS } from "../shared/weapons.js";
+      const renderer = new THREE.WebGLRenderer({
+        alpha: true,
+        antialias: true,
+        preserveDrawingBuffer: true,
+      });
+      renderer.setSize(640, 360);
+      renderer.setClearColor(0, 0);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.05;
+      document.body.append(renderer.domElement);
+      const scene = new THREE.Scene(),
+        pmrem = new THREE.PMREMGenerator(renderer),
+        room = new RoomEnvironment();
+      scene.environment = pmrem.fromScene(room, 0.04).texture;
+      room.dispose();
+      pmrem.dispose();
+      scene.add(new THREE.HemisphereLight(0xecf7ff, 0x687878, 1.2));
+      const sun = new THREE.DirectionalLight(0xffedd2, 2);
+      sun.position.set(3, 6, 4);
+      scene.add(sun);
+      const rim = new THREE.DirectionalLight(0xa0e2e8, 2);
+      rim.position.set(-4, 2, -2);
+      scene.add(rim);
+      const camera = new THREE.PerspectiveCamera(32, 640 / 360, 0.01, 100);
+      await loadAssets(() => {}, { ids: Object.keys(WEAPONS) });
+      window.thumbnail = (id) => {
+        const model = instance(id);
+        scene.add(model);
+        model.updateMatrixWorld(true);
+        const bounds = new THREE.Box3().setFromObject(model),
+          center = bounds.getCenter(new THREE.Vector3()),
+          size = bounds.getSize(new THREE.Vector3());
+        model.position.sub(center);
+        model.updateMatrixWorld(true);
+        camera.position.set(4, 1.15, -1.5).normalize().multiplyScalar(3);
+        camera.lookAt(0, 0, 0);
+        camera.updateMatrixWorld();
+        // Fit the eight actual bounding-box corners in camera space with a margin.
+        let distance = 0;
+        const tan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+        for (const x of [-0.5, 0.5])
+          for (const y of [-0.5, 0.5])
+            for (const z of [-0.5, 0.5]) {
+              const p = new THREE.Vector3(
+                x * size.x,
+                y * size.y,
+                z * size.z,
+              ).applyQuaternion(camera.quaternion.clone().invert());
+              distance = Math.max(
+                distance,
+                p.z + Math.abs(p.y) / tan,
+                p.z + Math.abs(p.x) / (tan * camera.aspect),
+              );
+            }
+        camera.position.normalize().multiplyScalar(distance * 1.16);
+        camera.lookAt(0, 0, 0);
+        camera.updateMatrixWorld();
+        renderer.render(scene, camera);
+        const data = renderer.domElement
+          .toDataURL("image/webp", 0.9)
+          .split(",")[1];
+        scene.remove(model);
+        return data;
+      };
+      window.ready = true;
+    </script>
+  </body>
+</html>

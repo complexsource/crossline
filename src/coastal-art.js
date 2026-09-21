@@ -159,7 +159,7 @@ export function coastalPalm(parent, x, z, height = 6) {
     tree,
     new THREE.TubeGeometry(curve, 12, 0.2, 9, false),
     coastalMaterial("wood"),
-  );
+  ).userData.keepSilhouette = true;
   for (let i = 1; i < 24; i++) {
     const p = curve.getPoint(i / 24);
     const collar = cylinder(

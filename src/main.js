@@ -4,8 +4,6 @@ import { COASTLINE, getMap, areaAt, surfaceAt } from "../shared/maps.js";
 import { TEAMS, TEAM_IDS } from "../shared/teams.js";
 import {
   WEAPONS,
-  PRIMARIES,
-  PISTOLS,
   GRENADES,
   TICK,
   move,
@@ -23,7 +21,14 @@ import {
 } from "./settings.js";
 import { Sound } from "./audio.js";
 import { openDialog } from "./dialog.js";
-import "./style.css";
+import { GraphicsRecovery } from "./graphics-recovery.js";
+import { effectiveQuality } from "./performance.js";
+import { unpackSnapshot } from "../shared/snapshot.js";
+import { BOT_DIFFICULTIES } from "../shared/bots.js";
+import { createBuyMenu } from "./buy-menu.js";
+import { finishBoot } from "./boot.js";
+import { canAim } from "../shared/aim.js";
+import { requestMouseCapture } from "./pointer-lock.js";
 
 const app = document.querySelector("#app"),
   canvas = document.querySelector("#game"),
@@ -41,6 +46,9 @@ const sound = new Sound(settings),
 const fireButton = new FireButton();
 let pressId = 0,
   predictedActionUntil = 0;
+let assetLibrary = null;
+const weaponLoads = new Map(),
+  weaponRetryAt = new Map();
 let room = null,
   snapshot = null,
   local = null,
@@ -49,6 +57,7 @@ let room = null,
   loadingEpoch = null,
   loadProgress = 0,
   loadText = "",
+  loadingError = "",
   countdownUntil = 0,
   lastCountdown = 0;
 let playing = false,
@@ -78,6 +87,36 @@ let feed = [],
   stepAt = 0,
   wasFiring = false,
   renderAt = 0;
+const recovery = new GraphicsRecovery(canvas, {
+  pause: () => {
+    closeBuy();
+    resetInput();
+    pending = [];
+  },
+  restore: async (contextRestored) => {
+    if (!graphics || graphics.renderer.getContext().isContextLost())
+      throw Error("The graphics driver has not restored WebGL yet");
+    settings.quality = "low";
+    saveSettings();
+    if (contextRestored) graphics.restoreContext();
+    graphics.clearEffects();
+    graphics.clearPlayers();
+    if (snapshot) graphics.sync(snapshot, socket.id);
+    await graphics.warmup(currentAssets());
+    pending = [];
+    accumulator = 0;
+    renderAt = performance.now();
+    toast("Graphics restored on Low. Click Enter Match to continue.");
+  },
+});
+function guardGraphics(action) {
+  if (recovery.blocked) return;
+  try {
+    return action();
+  } catch (error) {
+    recovery.fail(error);
+  }
+}
 try {
   name = localStorage.getItem("crossline-name") || "";
 } catch {}
@@ -112,11 +151,181 @@ function call(event, data = {}) {
   );
 }
 const k = (action) => keyLabel(settings.bindings[action]);
+const buyMenu = createBuyMenu({
+  getState: () => ({ player: local, opening: snapshot?.openingRemaining > 0 }),
+  key: () => k("buy"),
+  close: closeBuy,
+  select: async (itemId, isCurrent) => {
+    if (!local || local.buyRemaining <= 0 || local.hp <= 0) return null;
+    const spawnId = local.spawnId,
+      epoch = room?.loadEpoch;
+    const ids =
+      itemId === "previous"
+        ? Object.values(local.previousLoadout || {})
+        : [itemId];
+    await loadWeaponModels(ids);
+    // Never apply a pending download/purchase to a different life or match.
+    if (
+      !playing ||
+      !isCurrent() ||
+      !buyMenu.isOpen ||
+      room?.loadEpoch !== epoch ||
+      local?.spawnId !== spawnId ||
+      local.hp <= 0 ||
+      local.buyRemaining <= 0
+    )
+      return null;
+    resetInput();
+    sound.cancelReload();
+    return call("buy", { itemId, spawnId, epoch });
+  },
+});
+function closeBuy(resume = false) {
+  const wasOpen = buyMenu.isOpen;
+  buyMenu.close();
+  if (!wasOpen) return;
+  resetInput();
+  if (resume && playing && local?.hp > 0 && !recovery.blocked) captureMouse();
+}
+function toggleBuy() {
+  if (buyMenu.isOpen) {
+    closeBuy(true);
+    return;
+  }
+  if (!local || local.hp <= 0 || !(local.buyRemaining > 0)) {
+    toast("Buy time has ended. You get 10 seconds after respawning.");
+    return;
+  }
+  resetInput();
+  sound.cancelReload();
+  document.exitPointerLock?.();
+  buyMenu.open();
+}
+function textureLimit() {
+  return settings.textures === "low" ||
+    effectiveQuality(settings.quality) === "low"
+    ? 512
+    : effectiveQuality(settings.quality) === "medium"
+      ? 1024
+      : 2048;
+}
+async function loadWeaponModels(ids) {
+  if (!assetLibrary) assetLibrary = await import("./assets.js");
+  ids = [
+    ...new Set(ids.filter((id) => Object.hasOwn(WEAPONS, id) && id !== "bomb")),
+  ];
+  const missing = ids.filter(
+    (id) => !assetLibrary.hasAsset(id) && !weaponLoads.has(id),
+  );
+  if (missing.length) {
+    const work = assetLibrary
+      .loadAssets(() => {}, { ids: missing, textureLimit: textureLimit() })
+      .catch((error) => {
+        for (const id of missing)
+          weaponRetryAt.set(id, performance.now() + 5000);
+        toast(`Equipment download failed: ${error.message}. You can retry.`);
+        throw error;
+      })
+      .finally(() => {
+        for (const id of missing) weaponLoads.delete(id);
+      });
+    for (const id of missing) weaponLoads.set(id, work);
+  }
+  await Promise.all(ids.map((id) => weaponLoads.get(id)));
+}
+function streamStateWeapons(state) {
+  const ids = [
+    ...state.players.flatMap((p) => [
+      p.weapon,
+      p.slots?.primary,
+      p.slots?.secondary,
+    ]),
+    ...(state.drops || []).map((d) => d.weapon),
+  ];
+  const missing = [...new Set(ids)].filter(
+    (id) =>
+      id &&
+      assetLibrary &&
+      !assetLibrary.hasAsset(id) &&
+      !weaponLoads.has(id) &&
+      performance.now() >= (weaponRetryAt.get(id) || 0),
+  );
+  if (missing.length) loadWeaponModels(missing).catch(() => {});
+}
+const botDefaults = { difficulty: "normal", team: "auto" };
+function botPanel(host, inLobby) {
+  const bots = room.players.filter((p) => p.bot),
+    panel = document.createElement("section"),
+    maxBots = room.playerLimit - room.players.filter((p) => !p.bot).length;
+  panel.className = "bot-panel panel";
+  const difficulties = (selected) =>
+    Object.entries(BOT_DIFFICULTIES)
+      .map(
+        ([id, value]) =>
+          `<option value="${id}" ${id === selected ? "selected" : ""}>${value.label}</option>`,
+      )
+      .join("");
+  const teams = (selected) =>
+    TEAM_IDS.map(
+      (id) =>
+        `<option value="${id}" ${id === selected ? "selected" : ""}>${TEAMS[id].name}</option>`,
+    ).join("");
+  panel.innerHTML = `<div class="bot-heading"><div><div class="eyebrow">SQUAD SUPPORT</div><h3>BOT PLAYERS</h3></div><span>${bots.length} / ${maxBots} BOTS</span></div>
+    <p class="muted">Play solo or fill empty slots with server-controlled teammates and opponents. Bots use the same health, weapons and respawn rules.</p>
+    ${host && inLobby ? `<div class="bot-add"><label>DIFFICULTY<select id="bot-difficulty">${difficulties(botDefaults.difficulty)}</select></label><label>TEAM<select id="bot-team"><option value="auto" ${botDefaults.team === "auto" ? "selected" : ""}>AUTO BALANCE</option>${teams(botDefaults.team)}</select></label><button id="add-bot" ${room.players.length >= room.playerLimit ? "disabled" : ""}>＋ ADD BOT</button></div>` : `<p class="muted">${inLobby ? "Only the host can add, remove or configure bots." : "Return to the waiting room to manage bots."}</p>`}
+    <div class="bot-list">${bots.map((p) => `<div class="bot-row" data-bot-id="${esc(p.id)}"><b>${esc(p.name)}</b>${host && inLobby ? `<select data-bot-difficulty="${esc(p.id)}" aria-label="Difficulty for ${esc(p.name)}">${difficulties(p.difficulty)}</select><select data-bot-team="${esc(p.id)}" aria-label="Team for ${esc(p.name)}">${teams(p.team)}</select><button data-remove-bot="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">REMOVE</button>` : `<span>${esc(BOT_DIFFICULTIES[p.difficulty]?.label)}</span><span>${TEAMS[p.team].name}</span>`}</div>`).join("")}</div>
+    <p class="bot-note muted">Easy: relaxed aim · Normal: cover and teamwork · Hard: faster reactions and tactical grenades.</p>
+    <p class="bot-note muted">${room.players.length >= room.playerLimit ? "Room full. Remove a bot to make room for a friend. " : ""}Bots count toward this room’s ${room.playerLimit}-player limit. Start with 1–2 bots on slower computers.</p>`;
+  panel.querySelector("#bot-difficulty")?.addEventListener("change", (e) => {
+    botDefaults.difficulty = e.target.value;
+  });
+  panel.querySelector("#bot-team")?.addEventListener("change", (e) => {
+    botDefaults.team = e.target.value;
+  });
+  panel.querySelector("#add-bot")?.addEventListener("click", async (e) => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    const result = await call("addBot", { ...botDefaults });
+    if (!result) button.disabled = room.players.length >= room.playerLimit;
+  });
+  panel.querySelectorAll("[data-bot-difficulty]").forEach(
+    (el) =>
+      (el.onchange = () =>
+        call("configureBot", {
+          botId: el.dataset.botDifficulty,
+          difficulty: el.value,
+        })),
+  );
+  panel
+    .querySelectorAll("[data-bot-team]")
+    .forEach(
+      (el) =>
+        (el.onchange = () =>
+          call("configureBot", { botId: el.dataset.botTeam, team: el.value })),
+    );
+  panel.querySelectorAll("[data-remove-bot]").forEach(
+    (el) =>
+      (el.onclick = async () => {
+        el.disabled = true;
+        if (!(await call("removeBot", { botId: el.dataset.removeBot })))
+          el.disabled = false;
+      }),
+  );
+  return panel;
+}
+function updateMarkup(selector, html) {
+  const element = $(selector);
+  if (element && element._lastMarkup !== html) {
+    element.innerHTML = html;
+    element._lastMarkup = html;
+  }
+}
 function chrome(content) {
   canvas.classList.remove("active");
   return `<div class="shell"><header>${logo}<div class="online"><i class="${socket.connected ? "" : "offline"}"></i>${socket.connected ? "SERVER ONLINE" : "CONNECTING…"}</div></header>${content}<footer><span>COASTLINE <b>OPERATIONS / 02</b></span><span>DESKTOP · KEYBOARD + MOUSE</span><span>TEAM DEATHMATCH <b>2–10 PLAYERS</b></span></footer></div>`;
 }
 function leaveVisuals() {
+  closeBuy();
   playing = false;
   sound.setPlaying(false);
   graphics?.clearPlayers();
@@ -196,21 +405,7 @@ function showCreate() {
 function teamPanel(team) {
   const players = room.players.filter((p) => p.team === team),
     self = room.players.find((p) => p.id === socket.id);
-  return `<section class="team-panel ${team}"><div class="team-banner"><img src="/previews/${TEAMS[team].model}.webp" alt="${TEAMS[team].name} character"><div><small>CHOOSE YOUR SIDE</small><h2>${TEAMS[team].name}</h2><span>${players.length} PLAYERS</span></div></div><div class="roster">${players.map((p) => `<div class="player-row"><span class="avatar">${esc(p.name.charAt(0).toUpperCase())}</span><span><b>${esc(p.name)} ${p.id === socket.id ? "<small>YOU</small>" : ""}</b><small>${esc(WEAPONS[p.primary].name)} · ${esc(WEAPONS[p.secondary].name)}</small></span><span class="ready-state ${p.ready ? "ready" : ""}">${p.ready ? "READY" : "NOT READY"}${p.id === room.host ? "<small>HOST</small>" : ""}</span></div>`).join("")}${players.length < Math.ceil(room.playerLimit / 2) ? '<div class="empty-slot">＋ Waiting for your squad</div>' : ""}</div><button class="team-button" data-team="${team}" ${room.state !== "lobby" ? "disabled" : ""}>${self?.team === team ? "✓ YOUR TEAM" : "JOIN " + TEAMS[team].name}</button></section>`;
-}
-function weaponOptions(list, selected) {
-  return [...new Set(list.map((id) => WEAPONS[id].type))]
-    .map(
-      (type) =>
-        `<optgroup label="${type}">${list
-          .filter((id) => WEAPONS[id].type === type)
-          .map(
-            (id) =>
-              `<option value="${id}" ${id === selected ? "selected" : ""}>${WEAPONS[id].name}</option>`,
-          )
-          .join("")}</optgroup>`,
-    )
-    .join("");
+  return `<section class="team-panel ${team}"><div class="team-banner"><img src="/previews/${TEAMS[team].model}.webp" alt="${TEAMS[team].name} character"><div><small>CHOOSE YOUR SIDE</small><h2>${TEAMS[team].name}</h2><span>${players.length} PLAYERS</span></div></div><div class="roster">${players.map((p) => `<div class="player-row"><span class="avatar">${p.bot ? "AI" : esc(p.name.charAt(0).toUpperCase())}</span><span><b>${esc(p.name)} ${p.id === socket.id ? "<small>YOU</small>" : ""}</b><small>${p.bot ? "BOT SQUADMATE" : "EQUIPMENT SELECTED IN MATCH"}</small></span><span class="ready-state ${p.ready ? "ready" : ""}">${p.ready ? "READY" : "NOT READY"}${p.id === room.host ? "<small>HOST</small>" : ""}</span></div>`).join("")}${players.length < Math.ceil(room.playerLimit / 2) ? '<div class="empty-slot">＋ Waiting for your squad</div>' : ""}</div><button class="team-button" data-team="${team}" ${room.state !== "lobby" ? "disabled" : ""}>${self?.team === team ? "✓ YOUR TEAM" : "JOIN " + TEAMS[team].name}</button></section>`;
 }
 function showRoom() {
   page = "room";
@@ -220,16 +415,14 @@ function showRoom() {
     inLobby = room.state === "lobby";
   if (!self) return;
   app.innerHTML = chrome(
-    `<main class="lobby"><div class="page-heading"><div><div class="eyebrow">${esc(room.name)} / TEAM DEATHMATCH</div><h1>ASSEMBLE YOUR TEAM.</h1></div><button id="leave" class="subtle">LEAVE ROOM ↗</button></div><div class="room-strip panel"><div><small>ROOM CODE</small><button id="copy" title="Copy room code">${room.code} <span>⧉</span></button></div><button id="share" class="subtle">COPY INVITE LINK ↗</button><div class="host-name"><small>HOST</small><b>${esc(room.players.find((p) => p.id === room.host)?.name)}</b></div><span class="room-count">${room.players.length}<small> / ${room.playerLimit} PLAYERS</small></span></div><div class="room-layout"><div><div class="teams">${TEAM_IDS.map(teamPanel).join("")}</div><div class="loadout panel"><div class="loadout-fields"><label>PRIMARY WEAPON<select id="primary" ${!inLobby ? "disabled" : ""}>${weaponOptions(PRIMARIES, self.primary)}</select></label><label>SIDEARM<select id="secondary" ${!inLobby ? "disabled" : ""}>${weaponOptions(PISTOLS, self.secondary)}</select></label><small>Knife · HE · Flash · Smoke included. Equipment refills on respawn.</small></div><div class="deploy"><button id="ready" class="${self.ready ? "selected" : ""}" ${!inLobby ? "disabled" : ""}>${self.ready ? "✓ READY — CLICK TO CANCEL" : "I’M READY"}</button><button id="start" class="primary" ${!host || room.players.length < 2 || (inLobby && room.players.some((p) => !p.ready)) ? "disabled" : ""}>${host ? "START GAME" : "WAITING FOR HOST"} <span>↗</span></button></div></div><p class="room-notice muted">${esc(room.notice) || (!inLobby ? "Waiting for the host to return everyone to the room." : "All players must be ready. Teams balance automatically at match start.")}</p></div><aside class="briefing">${mapCard()}<p><b>10</b> MINUTE MATCH <span>·</span> <b>3</b> SECOND RESPAWN</p><button id="lobby-settings" class="subtle">SETTINGS ↗</button></aside></div></main>`,
+    `<main class="lobby"><div class="page-heading"><div><div class="eyebrow">${esc(room.name)} / TEAM DEATHMATCH</div><h1>ASSEMBLE YOUR TEAM.</h1></div><button id="leave" class="subtle">LEAVE ROOM ↗</button></div><div class="room-strip panel"><div><small>ROOM CODE</small><button id="copy" title="Copy room code">${room.code} <span>⧉</span></button></div><button id="share" class="subtle">COPY INVITE LINK ↗</button><div class="host-name"><small>HOST</small><b>${esc(room.players.find((p) => p.id === room.host)?.name)}</b></div><span class="room-count">${room.players.length}<small> / ${room.playerLimit} PLAYERS</small></span></div><div class="room-layout"><div><div class="teams">${TEAM_IDS.map(teamPanel).join("")}</div><div class="loadout panel"><div class="deployment-note"><div class="eyebrow">EQUIP ON DEPLOYMENT</div><h3>YOUR KIT. YOUR CALL.</h3><p>Press <kbd>${k("buy")}</kbd> in the match to open the Buy Menu.<br>20 seconds on deployment · 10 seconds after respawn.</p><small>Free equipment selection. A default kit is always provided.</small></div><div class="deploy"><button id="ready" class="${self.ready ? "selected" : ""}" ${!inLobby ? "disabled" : ""}>${self.ready ? "✓ READY — CLICK TO CANCEL" : "I’M READY"}</button><button id="start" class="primary" ${!host || room.players.length < 2 || (inLobby && room.players.some((p) => !p.ready)) ? "disabled" : ""}>${host ? "START GAME" : "WAITING FOR HOST"} <span>↗</span></button></div></div><p class="room-notice muted">${esc(room.notice) || (!inLobby ? "Waiting for the host to return everyone to the room." : "All players must be ready. Teams balance automatically at match start.")}</p></div><aside class="briefing">${mapCard()}<p><b>10</b> MINUTE MATCH <span>·</span> <b>3</b> SECOND RESPAWN</p><button id="lobby-settings" class="subtle">SETTINGS ↗</button></aside></div></main>`,
   );
   document
     .querySelectorAll("[data-team]")
     .forEach(
       (b) => (b.onclick = () => call("choose", { team: b.dataset.team })),
     );
-  $("#primary").onchange = (e) => call("choose", { primary: e.target.value });
-  $("#secondary").onchange = (e) =>
-    call("choose", { secondary: e.target.value });
+  $(".loadout").after(botPanel(host, inLobby));
   $("#ready").onclick = () => call("choose", { ready: !self.ready });
   $("#start").onclick = () => {
     sound.unlock();
@@ -260,26 +453,40 @@ async function leave() {
 }
 async function ensureAssets() {
   if (assetPromise) return assetPromise;
+  loadingError = "";
   assetPromise = (async () => {
     loadText = "Preparing renderer";
     loadProgress = 0.02;
-    const [{ Renderer }, { loadAssets }, { materialsReady }] =
-      await Promise.all([
-        import("./renderer.js"),
-        import("./assets.js"),
-        import("./materials.js"),
-      ]);
+    const [{ Renderer }, assets, { materialsReady }] = await Promise.all([
+      import("./renderer.js"),
+      import("./assets.js"),
+      import("./materials.js"),
+    ]);
+    assetLibrary = assets;
+    const { loadAssets, matchAssetIds } = assets;
     loadText = "Loading models";
-    await loadAssets((value) => {
-      loadProgress = 0.06 + value * 0.77;
-      updateLoading();
-    });
+    await loadAssets(
+      (value) => {
+        loadProgress = 0.06 + value * 0.77;
+        updateLoading();
+      },
+      {
+        ids: matchAssetIds(room?.players),
+        textureLimit: textureLimit(),
+      },
+    );
     loadText = "Preparing materials";
     await materialsReady;
     loadProgress = 0.86;
     updateLoading();
     if (!graphics) {
-      graphics = new Renderer(canvas, settings);
+      try {
+        graphics = new Renderer(canvas, settings);
+      } catch {
+        throw Error(
+          "WebGL 2 could not start. Enable browser hardware acceleration and update your graphics driver, then reload.",
+        );
+      }
       graphics.setQuality(settings.quality);
       graphics.onGrenadeBounce = (position) => {
         if (!local || !playing) return;
@@ -303,24 +510,40 @@ async function ensureAssets() {
     loadText = "Building COASTLINE";
     loadProgress = 0.94;
     updateLoading();
-    await graphics.renderer.compileAsync(graphics.scene, graphics.camera);
+    await graphics.warmup(currentAssets());
     loadProgress = 1;
     loadText = "Ready to deploy";
     updateLoading();
-  })().catch((error) => {
-    assetPromise = null;
-    loadText = error.message;
-    updateLoading();
-    throw error;
-  });
+  })()
+    .catch((error) => {
+      loadingError = error.message;
+      loadText = error.message;
+      updateLoading();
+      throw error;
+    })
+    .finally(() => {
+      assetPromise = null;
+    });
   return assetPromise;
+}
+function currentAssets() {
+  return [
+    ...new Set([
+      "knife",
+      ...GRENADES,
+      ...Object.values(TEAMS).flatMap((t) => [t.primary, t.secondary]),
+      ...(room?.players || [])
+        .flatMap((p) => [p.primary, p.secondary])
+        .filter(Boolean),
+    ]),
+  ];
 }
 function showLoading() {
   page = "loading";
   playing = false;
   document.exitPointerLock?.();
   app.innerHTML = chrome(
-    `<main class="loading-page"><div class="loading-art"><img src="${COASTLINE.preview}" alt="COASTLINE battleground"><div><div class="eyebrow">TEAM DEATHMATCH / COASTAL OPERATIONS</div><h1>COASTLINE</h1><p>Own the angles. Watch the water.</p></div></div><div class="loading-bottom panel"><div><div class="load-label"><span id="load-label">${loadText || "Preparing deployment"}</span><b id="load-percent">0%</b></div><div class="progress"><i id="load-bar"></i></div><p class="muted">${room.players.map((p) => `${esc(p.name)} ${p.loaded ? "✓" : "…"}`).join("　 ·　 ")}</p></div><strong id="countdown">${room.state === "countdown" ? Math.ceil(room.countdown) : "02"}</strong></div><p class="loading-tip">${k("grenade")} SELECT GRENADE · LEFT CLICK TO THROW · ${k("use")} PICK UP DROPPED WEAPONS</p></main>`,
+    `<main class="loading-page"><div class="loading-art"><img src="${COASTLINE.preview}" alt="COASTLINE battleground"><div><div class="eyebrow">TEAM DEATHMATCH / COASTAL OPERATIONS</div><h1>COASTLINE</h1><p>Own the angles. Watch the water.</p></div></div><div class="loading-bottom panel"><div><div class="load-label"><span id="load-label" role="status">${loadText || "Preparing deployment"}</span><b id="load-percent">0%</b></div><div id="load-progress" class="progress" role="progressbar" aria-label="Game assets" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="load-bar"></i></div><p class="muted">${room.players.map((p) => `${esc(p.name)} ${p.loaded ? "✓" : "…"}`).join("　 ·　 ")}</p></div><strong id="countdown">${room.state === "countdown" ? Math.ceil(room.countdown) : "…"}</strong></div><p class="loading-tip">${k("grenade")} SELECT GRENADE · LEFT CLICK TO THROW · ${k("use")} PICK UP DROPPED WEAPONS</p></main>`,
   );
   updateLoading();
 }
@@ -329,6 +552,27 @@ function updateLoading() {
   $("#load-label").textContent = loadText || "Preparing deployment";
   $("#load-percent").textContent = `${Math.round(loadProgress * 100)}%`;
   $("#load-bar").style.width = `${loadProgress * 100}%`;
+  $("#load-progress").setAttribute(
+    "aria-valuenow",
+    Math.round(loadProgress * 100),
+  );
+  if (loadingError && !$("#retry-loading")) {
+    const button = document.createElement("button");
+    button.id = "retry-loading";
+    button.textContent = "RETRY LOADING";
+    button.onclick = async () => {
+      const epoch = room?.loadEpoch;
+      button.remove();
+      try {
+        await ensureAssets();
+        if (room?.state === "loading" && room.loadEpoch === epoch)
+          await call("loaded", { epoch });
+      } catch (error) {
+        toast(`Loading failed: ${error.message}`);
+      }
+    };
+    $(".loading-bottom").append(button);
+  }
 }
 const table = (players, results = false) =>
   `<table><thead><tr><th>PLAYER</th><th>K</th><th>D</th>${results ? "<th>K/D</th><th>HS</th><th>DAMAGE</th>" : ""}<th>SCORE</th><th>PING</th></tr></thead><tbody>${players.map((p) => `<tr class="${p.id === socket.id ? "self" : ""}"><td><i class="team-dot ${p.team}"></i>${esc(p.name)}${p.id === socket.id ? " <small>YOU</small>" : ""}</td><td>${p.kills}</td><td>${p.deaths}</td>${results ? `<td>${Number(p.kd).toFixed(2)}</td><td>${p.headshots}</td><td>${p.damage}</td>` : ""}<td>${p.score ?? p.kills * 100}</td><td>${p.ping} <small>ms</small></td></tr>`).join("")}</tbody></table>`;
@@ -374,6 +618,7 @@ function controlsMarkup() {
     ["previous", "PREVIOUS WEAPON"],
     ["drop", "DROP WEAPON"],
     ["use", "USE / PICK UP"],
+    ["buy", "BUY MENU"],
     ["scoreboard", "SCOREBOARD"],
     ["chat", "CHAT"],
   ]
@@ -388,7 +633,7 @@ function showGuide(inMatch = true) {
   const el = document.createElement("dialog");
   el.className = "modal";
   el.id = "guide";
-  el.innerHTML = `<section class="guide-card panel"><div class="eyebrow">A QUICK FIELD GUIDE</div><h2 id="guide-title">KNOW YOUR MOVES.</h2><p class="muted">Move with the keyboard. Look with the mouse. Enemy kills earn your team one point. Highest score after 10 minutes wins.</p>${controlsMarkup()}<div class="guide-notes"><p><b>GRENADES</b> Select with ${k("grenade")}, cycle to HE, Flash or Smoke, then ${k("shoot")} to throw.</p><p><b>KEEP FIGHTING</b> Respawn in 3 seconds. Equipment refills. Team damage is off.</p><p><b>OBJECTIVES</b> Bomb equipment is reserved for a future Bomb/Defuse mode, not Team Deathmatch.</p></div>${inMatch ? '<label class="check"><input id="hide-guide" type="checkbox">Don’t show again</label>' : ""}<button id="guide-close" class="primary">GOT IT <span>↗</span></button></section>`;
+  el.innerHTML = `<section class="guide-card panel"><div class="eyebrow">A QUICK FIELD GUIDE</div><h2 id="guide-title">KNOW YOUR MOVES.</h2><p class="muted">Move with the keyboard. Look with the mouse. Enemy kills earn your team one point. Highest score after 10 minutes wins.</p>${controlsMarkup()}<div class="guide-notes"><p><b>BUY MENU</b> ${k("buy")} opens the armory. Opening buy time: 20 seconds with combat and movement locked. Respawns: 10 seconds to shop during live combat.</p><p><b>GRENADES</b> Select with ${k("grenade")}, cycle to HE, Flash or Smoke, then ${k("shoot")} to throw.</p><p><b>KEEP FIGHTING</b> Respawn in 3 seconds. Equipment refills. Team damage is off.</p><p><b>OBJECTIVES</b> Bomb equipment is reserved for a future Bomb/Defuse mode, not Team Deathmatch.</p></div>${inMatch ? '<label class="check"><input id="hide-guide" type="checkbox">Don’t show again</label>' : ""}<button id="guide-close" class="primary">GOT IT <span>↗</span></button></section>`;
   document.body.append(el);
   const close = (enterMatch = false) => {
     if (inMatch) {
@@ -407,6 +652,7 @@ function showGuide(inMatch = true) {
   });
 }
 function showMatch() {
+  closeBuy();
   page = "match";
   playing = true;
   resultsDismissed = false;
@@ -420,12 +666,13 @@ function showMatch() {
   flashUntil = 0;
   canvas.classList.add("active");
   sound.setPlaying(true);
-  app.innerHTML = `<div class="hud"><div class="map-label"><b>COASTLINE</b><span id="area">DEPLOYING</span><small id="connection-stats"></small></div><div class="match-score"><div class="score soldiers"><span>SOLDIERS</span><b id="soldiers-score">0</b></div><div class="clock"><small>TEAM DEATHMATCH</small><b id="timer">10:00</b></div><div class="score terrorists"><b id="terrorists-score">0</b><span>TERRORISTS</span></div></div><div id="kill-feed"></div><div id="crosshair" class="crosshair" style="${crossStyle()}">${crossMarkup}</div><div id="scope"><i></i></div><div id="hitmarker">×</div><div id="damage-flash"></div><div id="smoke-veil"></div><div id="flash-veil"></div><div id="confirmation">ENEMY ELIMINATED</div><div id="pickup-prompt"></div><div id="death"><small>YOU DIED</small><h2>RESPAWNING IN <span id="respawn">3</span></h2><p>Returning to your team’s position</p></div><div class="hud-bottom"><div class="health-block"><span>+</span><div><small>HEALTH</small><b id="health">100</b><div class="health-bar"><i id="health-fill"></i></div></div></div><div id="weapon-slots" class="weapon-slots"></div><div class="ammo-block"><small id="weapon-name"></small><div><b id="ammo">30</b><span>/ <span id="reserve">120</span></span></div><small id="reload-prompt"></small></div></div><div class="hud-help">${k("scoreboard")} SCOREBOARD <span>·</span> ${k("use")} PICK UP <span>·</span> ESC PAUSE</div><div id="board" class="scoreboard panel"></div><div id="chat-log"></div></div><div id="pause" class="pause-screen"><section class="pause-card panel"><div class="eyebrow">${TEAMS[room.players.find((p) => p.id === socket.id).team].name} / COASTLINE</div><h2>BACK TO THE COAST.</h2><p class="muted">Capture your mouse to play. Escape releases it.</p><button id="enter" class="primary">ENTER MATCH <span>↗</span></button><div class="pause-options"><button data-settings="controls">CONTROLS</button><button data-settings="graphics">GRAPHICS</button><button data-settings="audio">AUDIO</button><button data-settings="gameplay">GAMEPLAY</button></div><button id="pause-how" class="subtle">HOW TO PLAY</button><button id="exit-match" class="subtle">LEAVE MATCH</button></section></div><form id="chat-form" class="hidden"><input id="chat-input" maxlength="140" placeholder="Message your room · Enter to send"></form>`;
+  app.innerHTML = `<div class="hud"><div class="map-label"><b>COASTLINE</b><span id="area">DEPLOYING</span><small id="connection-stats"></small></div><div class="match-score"><div class="score soldiers"><span>SOLDIERS</span><b id="soldiers-score">0</b></div><div class="clock"><small>TEAM DEATHMATCH</small><b id="timer">10:00</b></div><div class="score terrorists"><b id="terrorists-score">0</b><span>TERRORISTS</span></div></div><div id="buy-prompt" class="buy-prompt"><kbd>${k("buy")}</kbd><span id="buy-hint"></span><b id="buy-hint-time"></b></div><div id="weapon-loading"></div><div id="kill-feed"></div><div id="crosshair" class="crosshair" style="${crossStyle()}">${crossMarkup}</div><div id="scope"><i></i></div><div id="hitmarker">×</div><div id="damage-flash"></div><div id="smoke-veil"></div><div id="flash-veil"></div><div id="confirmation">ENEMY ELIMINATED</div><div id="pickup-prompt"></div><div id="death"><small>YOU DIED</small><h2>RESPAWNING IN <span id="respawn">3</span></h2><p>Returning to your team’s position</p></div><div class="hud-bottom"><div class="health-block"><span>+</span><div><small>HEALTH</small><b id="health">100</b><div class="health-bar"><i id="health-fill"></i></div></div></div><div id="weapon-slots" class="weapon-slots"></div><div class="ammo-block"><small id="weapon-name"></small><div><b id="ammo">30</b><span>/ <span id="reserve">120</span></span></div><small id="reload-prompt"></small></div></div><div class="hud-help">${k("buy")} BUY MENU <span>·</span> ${k("scoreboard")} SCOREBOARD <span>·</span> ${k("use")} PICK UP <span>·</span> ESC PAUSE</div><div id="board" class="scoreboard panel"></div><div id="chat-log"></div></div><div id="pause" class="pause-screen"><section class="pause-card panel"><div class="eyebrow">${TEAMS[room.players.find((p) => p.id === socket.id).team].name} / COASTLINE</div><h2>BACK TO THE COAST.</h2><p class="muted">Capture your mouse to play. Escape releases it.</p><button id="enter" class="primary">ENTER MATCH <span>↗</span></button><button id="pause-buy">OPEN BUY MENU <span>${k("buy")}</span></button><div class="pause-options"><button data-settings="controls">CONTROLS</button><button data-settings="graphics">GRAPHICS</button><button data-settings="audio">AUDIO</button><button data-settings="gameplay">GAMEPLAY</button></div><button id="pause-how" class="subtle">HOW TO PLAY</button><button id="exit-match" class="subtle">LEAVE MATCH</button></section></div><form id="chat-form" class="hidden"><input id="chat-input" maxlength="140" placeholder="Message your room · Enter to send"></form>`;
   $("#enter").onclick = () => {
-    if (!settings.hideGuide) showGuide();
+    if (!settings.hideGuide && !(snapshot?.openingRemaining > 0)) showGuide();
     else captureMouse();
   };
   $("#pause-how").onclick = () => showGuide();
+  $("#pause-buy").onclick = toggleBuy;
   $("#exit-match").onclick = leave;
   document
     .querySelectorAll("[data-settings]")
@@ -437,19 +684,22 @@ function showMatch() {
     $("#chat-form").classList.add("hidden");
     captureMouse();
   };
-  confirmationUntil = performance.now() + 1200;
-  $("#confirmation").textContent = "FIGHT";
+  confirmationUntil = 0;
 }
 async function captureMouse() {
-  await sound.unlock();
+  // Keep pointer-lock inside the trusted click/key gesture; a suspended audio
+  // device must not delay mouse capture or consume that activation.
+  sound
+    .unlock()
+    .catch(() => toast("Audio is unavailable. You can still play."));
   try {
-    await canvas.requestPointerLock({ unadjustedMovement: true });
-  } catch {
-    try {
-      await canvas.requestPointerLock();
-    } catch {
-      toast("Mouse capture was blocked. Click Enter match again.");
-    }
+    await requestMouseCapture(canvas);
+  } catch (error) {
+    toast(
+      /too many pointer lock requests/i.test(error?.message || "")
+        ? "Mouse-capture limit reached. Wait a few seconds, then click Enter match."
+        : "Mouse capture was blocked. Click Enter match again.",
+    );
   }
 }
 function updateServerStatus(connected) {
@@ -488,6 +738,7 @@ socket.on("room", (data) => {
       countdownUntil = performance.now() + data.countdown * 1000;
     showLoading();
     if (loadingEpoch !== data.loadEpoch) {
+      loadingError = "";
       loadingEpoch = data.loadEpoch;
       const epoch = loadingEpoch;
       ensureAssets()
@@ -508,10 +759,17 @@ socket.on("room", (data) => {
 });
 socket.on("state", (state) => {
   if (!playing || !graphics) return;
+  state = unpackSnapshot(state);
   snapshot = state;
+  streamStateWeapons(state);
   const own = state.players.find((p) => p.id === socket.id);
   if (!own) return;
-  graphics.sync(state, socket.id);
+  if (
+    buyMenu.isOpen &&
+    (own.hp <= 0 || (local && own.spawnId !== local.spawnId))
+  )
+    closeBuy();
+  guardGraphics(() => graphics.sync(state, socket.id));
   if (own.hp <= 0 || (local && local.weapon !== own.weapon))
     sound.cancelReload();
   if (
@@ -536,7 +794,7 @@ socket.on("state", (state) => {
     const old = { x: local.x, y: local.y, z: local.z };
     pending = pending.filter((c) => c.seq > own.ack);
     local = { ...own };
-    if (local.hp > 0)
+    if (local.hp > 0 && !(state.openingRemaining > 0))
       for (const cmd of pending) move(local, cmd, TICK, COASTLINE.boxes);
     const distance = Math.hypot(
       old.x - local.x,
@@ -552,9 +810,15 @@ socket.on("state", (state) => {
     }
   }
 });
+socket.on("combatStarted", () => {
+  if (!playing) return;
+  cancelFire();
+  confirmationUntil = performance.now() + 1500;
+  if ($("#confirmation")) $("#confirmation").textContent = "FIGHT";
+});
 socket.on("fx", (event) => {
   if (!playing) return;
-  graphics?.fx(event, socket.id);
+  guardGraphics(() => graphics?.fx(event, socket.id));
   if (event.type === "kill") {
     feed.unshift({ ...event, at: performance.now() });
     feed = feed.slice(0, 5);
@@ -584,7 +848,13 @@ socket.on("fx", (event) => {
       pan,
     });
   else if (
-    ["explosion", "flashbang", "smoke", "grenadeBounce"].includes(event.type)
+    [
+      "explosion",
+      "flashbang",
+      "smoke",
+      "grenadeBounce",
+      "grenadeRelease",
+    ].includes(event.type)
   )
     sound.play(event.type, { volume: Math.max(0.03, 1 - distance / 45), pan });
   else if (event.id === socket.id || event.type === "pickup")
@@ -594,6 +864,11 @@ socket.on("hit", (data) => {
   hitUntil = performance.now() + 150;
   $("#hitmarker")?.classList.toggle("headshot", data.headshot);
   sound.play(data.killed ? "kill" : data.headshot ? "headshot" : "hit");
+  if (data.weapon === "he" && !data.killed) {
+    confirmationUntil = performance.now() + 1100;
+    if ($("#confirmation"))
+      $("#confirmation").textContent = `✹ HE HIT · ${data.damage} DAMAGE`;
+  }
   if (data.killed) {
     confirmationUntil = performance.now() + 1300;
     if ($("#confirmation"))
@@ -640,6 +915,8 @@ function cancelFire() {
 function canStartFire() {
   return (
     local &&
+    !(snapshot?.openingRemaining > 0) &&
+    !buyMenu.isOpen &&
     !actionBlocksFire(local) &&
     performance.now() >= predictedActionUntil
   );
@@ -655,10 +932,11 @@ document.addEventListener("visibilitychange", () => {
 });
 document.addEventListener("mousemove", (e) => {
   if (!locked || !playing || !local || local.hp <= 0) return;
-  const factor = input.aim
-    ? settings.aimSensitivity *
-      (WEAPONS[local.weapon].type === "SNIPER" ? 0.4 : 1)
-    : 1;
+  const factor =
+    input.aim && canAim(local)
+      ? settings.aimSensitivity *
+        (WEAPONS[local.weapon].type === "SNIPER" ? 0.4 : 1)
+      : 1;
   input.yaw -= e.movementX * settings.sensitivity * factor;
   input.pitch = Math.max(
     -1.48,
@@ -691,11 +969,17 @@ function feedbackShot(now) {
   fxAt = now + w.interval * 1000;
 }
 function control(code, down, repeat = false) {
-  if (!playing || $("#settings-modal") || $("#guide")) return false;
+  if (!playing || recovery.blocked || $("#settings-modal") || $("#guide"))
+    return false;
   const action = Object.entries(settings.bindings).find(
     ([, key]) => key === code,
   )?.[0];
   if (!action) return false;
+  if (action === "buy" && document.activeElement !== $("#chat-input")) {
+    if (down && !repeat) toggleBuy();
+    return true;
+  }
+  if (buyMenu.isOpen) return false;
   if (action === "shoot" && !down) {
     fireButton.release();
     input.shoot = false;
@@ -717,7 +1001,7 @@ function control(code, down, repeat = false) {
         value: {
           yaw: input.yaw,
           pitch: input.pitch,
-          aim: input.aim,
+          aim: input.aim && canAim(local),
           spawnId: local.spawnId,
           weapon: local.weapon,
           fireEpoch: local.fireEpoch,
@@ -814,12 +1098,30 @@ window.addEventListener("settingschange", () => {
 });
 function updateHud(now) {
   if (!playing || !local || !snapshot) return;
+  buyMenu.update();
   const text = (id, value) => {
       const el = document.getElementById(id);
-      if (el) el.textContent = value;
+      if (el && el.textContent !== String(value)) el.textContent = value;
     },
     w = WEAPONS[local.weapon],
     secs = Math.max(0, Math.ceil(snapshot.remaining));
+  const buying = local.hp > 0 && local.buyRemaining > 0,
+    opening = snapshot.openingRemaining > 0;
+  $("#buy-prompt")?.classList.toggle("visible", buying);
+  text(
+    "buy-hint",
+    opening
+      ? "BUY PHASE · COMBAT STARTS IN"
+      : "RESPAWN BUY TIME · MATCH IS LIVE",
+  );
+  text("buy-hint-time", `${Math.ceil(local.buyRemaining)}s`);
+  if ($("#pause-buy")) $("#pause-buy").disabled = !buying;
+  text(
+    "weapon-loading",
+    assetLibrary && !assetLibrary.hasAsset(local.weapon)
+      ? "PREPARING WEAPON MODEL…"
+      : "",
+  );
   text(
     "timer",
     `${Math.floor(secs / 60)
@@ -858,8 +1160,9 @@ function updateHud(now) {
   );
   $("#health-fill").style.width = `${local.hp}%`;
   $("#death").classList.toggle("visible", local.hp <= 0);
-  const scope = input.aim && w.type === "SNIPER" && local.hp > 0 && locked;
+  const scope = input.aim && w.scoped && canAim(local) && locked;
   $("#scope").classList.toggle("visible", scope);
+  $("#scope").classList.toggle("optic", w.type !== "SNIPER");
   $("#crosshair").classList.toggle("hidden", local.hp <= 0 || !locked || scope);
   $("#crosshair").setAttribute(
     "style",
@@ -874,26 +1177,32 @@ function updateHud(now) {
   if (scoreboard)
     $("#board").innerHTML =
       `<div class="board-title">COASTLINE <small>ROOM ${room.code}</small></div>${TEAM_IDS.map((t) => `<h3 class="${t}">${TEAMS[t].name}</h3>${table(snapshot.players.filter((p) => p.team === t).sort((a, b) => b.kills - a.kills))}`).join("")}`;
-  $("#weapon-slots").innerHTML = [
-    ["primary", local.slots.primary],
-    ["secondary", local.slots.secondary],
-    ["knife", "knife"],
-    ...GRENADES.map((id) => ["grenade", id]),
-  ]
-    .map(
-      ([key, id]) =>
-        `<span class="${id === local.weapon ? "active" : ""} ${!id ? "empty" : ""}"><kbd>${k(key)}</kbd>${!id ? "EMPTY" : GRENADES.includes(id) ? `${id.toUpperCase()} ${local.grenades[id]}` : WEAPONS[id].name}</span>`,
-    )
-    .join("");
+  updateMarkup(
+    "#weapon-slots",
+    [
+      ["primary", local.slots.primary],
+      ["secondary", local.slots.secondary],
+      ["knife", "knife"],
+      ...GRENADES.map((id) => ["grenade", id]),
+    ]
+      .map(
+        ([key, id]) =>
+          `<span class="${id === local.weapon ? "active" : ""} ${!id ? "empty" : ""}"><kbd>${k(key)}</kbd>${!id ? "EMPTY" : GRENADES.includes(id) ? `${id.toUpperCase()} ${local.grenades[id]}` : WEAPONS[id].name}</span>`,
+      )
+      .join(""),
+  );
   feed = feed.filter((f) => now - f.at < 6500);
-  $("#kill-feed").innerHTML = settings.killfeed
-    ? feed
-        .map(
-          (f) =>
-            `<div><b class="${f.team}">${esc(f.killer)}</b><span>${f.weapon === "he" ? '<i aria-label="Grenade kill">✹</i> ' : f.headshot ? "⌖ " : ""}${esc(WEAPONS[f.weapon]?.name)}</span><b>${esc(f.victim)}</b></div>`,
-        )
-        .join("")
-    : "";
+  updateMarkup(
+    "#kill-feed",
+    settings.killfeed
+      ? feed
+          .map(
+            (f) =>
+              `<div><b class="${f.team}">${esc(f.killer)}</b><span>${f.weapon === "he" ? '<i aria-label="Grenade kill">✹</i> ' : f.headshot ? "⌖ " : ""}${esc(WEAPONS[f.weapon]?.name)}</span><b>${esc(f.victim)}</b></div>`,
+          )
+          .join("")
+      : "",
+  );
   const nearest = (snapshot.drops || [])
     .filter((d) => {
       const dx = d.x - local.x,
@@ -923,12 +1232,24 @@ function updateHud(now) {
       : "",
   );
   $("#pickup-prompt").classList.toggle("visible", !!nearest && locked);
-  $("#chat-log").innerHTML = chat
-    .filter((m) => now - m.at < 12000)
-    .map((m) => `<div><b>${esc(m.name)}</b> ${esc(m.message)}</div>`)
-    .join("");
+  updateMarkup(
+    "#chat-log",
+    chat
+      .filter((m) => now - m.at < 12000)
+      .map((m) => `<div><b>${esc(m.name)}</b> ${esc(m.message)}</div>`)
+      .join(""),
+  );
 }
 function frame(now) {
+  // Schedule first: a single render exception must never kill the app loop.
+  requestAnimationFrame(frame);
+  try {
+    advanceFrame(now);
+  } catch (error) {
+    recovery.fail(error);
+  }
+}
+function advanceFrame(now) {
   const elapsed = (now - last) / 1000,
     dt = Math.min(0.05, elapsed);
   last = now;
@@ -939,13 +1260,15 @@ function frame(now) {
       if (local.hp > 0) {
         const cmd = {
           ...input,
+          aim: input.aim && canAim(local),
           seq: ++seq,
           spawnId: local.spawnId,
           fireEpoch: local.fireEpoch,
           weapon: local.weapon,
         };
         socket.volatile.emit("input", cmd);
-        move(local, cmd, TICK, COASTLINE.boxes);
+        if (!(snapshot?.openingRemaining > 0))
+          move(local, cmd, TICK, COASTLINE.boxes);
         pending.push(cmd);
         if (pending.length > 90) pending.shift();
       }
@@ -953,7 +1276,12 @@ function frame(now) {
     local.reload = Math.max(0, local.reload - dt);
     local.respawn = Math.max(0, local.respawn - dt);
     local.actionTime = Math.max(0, local.actionTime - dt);
-    if (snapshot) snapshot.remaining = Math.max(0, snapshot.remaining - dt);
+    local.buyRemaining = Math.max(0, local.buyRemaining - dt);
+    if (snapshot) {
+      if (!(snapshot.openingRemaining > 0))
+        snapshot.remaining = Math.max(0, snapshot.remaining - dt);
+      snapshot.openingRemaining = Math.max(0, snapshot.openingRemaining - dt);
+    }
     if (
       locked &&
       input.shoot &&
@@ -966,7 +1294,7 @@ function frame(now) {
     ) {
       const w = WEAPONS[local.weapon];
       if (now >= fxAt && (w.auto || !wasFiring)) {
-        graphics.localShot(local.weapon);
+        guardGraphics(() => graphics.localShot(local.weapon));
         sound.play(local.weapon);
         input.pitch = Math.min(
           1.48,
@@ -986,16 +1314,21 @@ function frame(now) {
         surface: surfaceAt(local.x, local.z),
         volume: local.crouch ? 0.25 : 0.7,
       });
-      stepAt = now + (input.run ? 300 : 410);
+      stepAt =
+        now +
+        Math.max(280, Math.min(760, 2050 / Math.hypot(local.vx, local.vz)));
     }
     for (const a of ["x", "y", "z"]) correction[a] *= Math.exp(-15 * dt);
   }
   if (
     graphics &&
+    !recovery.blocked &&
+    !document.hidden &&
     playing &&
     now - renderAt >= 1000 / (settings.fpsLimit || 1000) - 1
   ) {
     const renderDt = Math.min(0.1, (now - renderAt) / 1000);
+    graphics.sampleFrame(now - renderAt);
     fps += (1 / Math.max(0.001, renderDt) - fps) * 0.08;
     graphics.render(
       renderDt,
@@ -1008,7 +1341,7 @@ function frame(now) {
           }
         : null,
       playing,
-      input.aim && locked,
+      input.aim && locked && canAim(local),
     );
     renderAt = now;
   }
@@ -1042,7 +1375,7 @@ function frame(now) {
               Math.min(2, flashStrength * 3),
           )
         : 0;
-  requestAnimationFrame(frame);
 }
 showHome();
+finishBoot();
 requestAnimationFrame(frame);

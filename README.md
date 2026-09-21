@@ -4,7 +4,7 @@ Canonical project: `/Users/nikhilvadhawana/Desktop/CXSOURCE/REPO/crossline`.
 
 A browser multiplayer FPS using Three.js, Node.js and Socket.IO. Create a named room, share its six-character code, choose **Soldiers** or **Terrorists**, ready up, and play ten-minute Team Deathmatch on **COASTLINE**. Supports 2–10 players. No accounts, matchmaking service or database.
 
-Work is on `version-2`. Version 1 remains unchanged on `codex/version-1`. This V2 visual upgrade refines the established stylized tactical direction while preserving the room flow, Team Deathmatch rules and server authority. It is not a claim of AAA quality or equivalence to the supplied reference images. See [V2 scope and limitations](VERSION2.md). [UPGRADE.md](UPGRADE.md) describes the historical V1 art pass.
+In-game armory work is on `codex/guns`, following the bot work on `codex/bots`. Version 1 remains unchanged on `codex/version-1`. This V2 visual upgrade refines the established stylized tactical direction while preserving the room flow, Team Deathmatch rules and server authority. It is not a claim of AAA quality or equivalence to the supplied reference images. See [V2 scope and limitations](VERSION2.md). [UPGRADE.md](UPGRADE.md) describes the historical V1 art pass.
 
 ## Run
 
@@ -16,9 +16,15 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`. Create a room, then use another browser window to join with a different name. Everyone selects **I’m ready**; the host starts. The server waits for every client to load the map and compressed GLB models, then runs the 3–2–1 countdown. Click **Enter match** to capture the mouse. Escape pauses/releases it.
+Open `http://localhost:3000`. Create a room, then use another browser window to join with a different name. Everyone selects **I’m ready**; the host starts. The server waits for every client to load the map and compressed GLB models, then runs the 3–2–1 countdown. Click **Enter match** to capture the mouse. Escape releases the mouse; the multiplayer match continues.
+
+Weapon selection is now inside the match. Press **B** during the protected **20-second opening buy phase**, or during your **10-second buy window after each respawn**. All equipment is free, a default kit is always supplied, and the ten-minute match clock begins after opening preparation. Respawn shopping does not pause combat or extend spawn protection. The eight-category menu includes every existing weapon/equipment item; the objective device remains locked in TDM. See [armory rules, performance and verification](BUY_MENU.md).
+
+To practice alone or fill your squad, use **BOT PLAYERS → Add Bot** in the waiting room. The host chooses Easy, Normal or Hard and an automatic or explicit team, and can edit/remove bots before starting. Bots are ready automatically; humans still ready up normally. Humans and bots share the room's 2–10-player limit. Bots stay for replay but never become host; when the last human leaves, the room and its bots are removed. See [bot behavior, testing and limitations](BOTS.md).
 
 Production:
+
+For the latest loading, aiming, grenade and movement changes, see the [gameplay polish and verification notes](GAMEPLAY_POLISH.md), including target-device release checks.
 
 ```sh
 npm run build
@@ -37,6 +43,7 @@ Friends must use the **same server URL**, not their own localhost. For LAN testi
 | Left / right click   | Fire or throw selected grenade / aim           |
 | Space / Shift / Ctrl | Jump / run / crouch                            |
 | R                    | Reload                                         |
+| B                    | Buy Menu during opening/respawn buy time       |
 | 1 / 2 / 3            | Primary / pistol / knife                       |
 | 4                    | Select and cycle available grenades            |
 | 5                    | Objective slot; disabled in Team Deathmatch    |
@@ -82,6 +89,9 @@ The normal server appends **one JSON object per finished match** to `data/matche
 npm test
 npm run build
 npm run test:browser
+npm run test:buy
+npm run test:bots
+npm run test:performance
 npm run test:home
 npm run test:characters
 npm run test:visual
@@ -90,6 +100,14 @@ BENCHMARK=1 npm run test:visual
 ```
 
 Browser/visual tests require installed Google Chrome. They launch isolated headless profiles and servers, not your existing browser or live rooms. Screenshots and benchmark JSON go to ignored `test-results/`; see `test-results/benchmark.json` for the latest local measurement after running the benchmark. A local sample is not a low-end hardware or internet-latency guarantee.
+
+The bot suite covers host permissions, capacity, solo/mixed matches, all three difficulties, multilevel navigation, sight obstruction, reaction time, ammunition/reloads, grenade safety/effects, a full ten-minute simulated match, replay and cleanup. Its browser pass plays a solo match, then a ten-player mixed room, and writes `test-results/bots-browser.json` plus lobby/match screenshots. Run `npm run build` before the browser tests.
+
+The September performance pass adds Auto/adaptive rendering, graphics recovery,
+staged room assets, effect pooling and compact snapshots. See
+[PERFORMANCE.md](PERFORMANCE.md) for measured results, limitations and the
+Windows/integrated-GPU retest checklist. Its isolated stress/recovery test writes
+`test-results/performance.json`.
 
 The first-person sweep renders all 39 weapon/equipment models at rest and firearms at two reload phases (107 views). It checks finite transforms, hand creation and that exposed palm/finger vertices do not cross the camera near plane in those samples, and saves review screenshots. Forearms deliberately continue outside the frame. It does not prove perfect anatomical contact or the absence of clipping at every frame/FOV. For a targeted review, use `WEAPONS=glock18,r8,dualberettas npm run test:first-person`.
 

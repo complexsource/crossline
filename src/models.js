@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { WEAPONS } from "../shared/weapons.js";
+import { stanceBlend } from "../shared/game.js";
 import { TEAMS } from "../shared/teams.js";
-import { GRENADE_THROW_SECONDS } from "../shared/actions.js";
-import { instance } from "./assets.js";
+import { instance, worldWeaponInstance } from "./assets.js";
 import {
   radialTexture,
   joint,
@@ -10,7 +10,13 @@ import {
   disposeModel as disposeGeometryModel,
 } from "./geometry.js";
 import { viewHand, updateViewArms } from "./view-hands.js";
-import { weaponPose, reloadPose, equipmentPose } from "./weapon-motion.js";
+import {
+  weaponPose,
+  reloadPose,
+  equipmentPose,
+  throwPose,
+  smooth,
+} from "./weapon-motion.js";
 export { material, radialTexture };
 export function disposeModel(group) {
   // SkeletonUtils clones own GPU bone textures, unlike the shared model meshes.
@@ -31,7 +37,7 @@ export const makeGrenade = (kind = "he") => {
   return model;
 };
 export function makeGun(id, firstPerson = false, team = "soldiers") {
-  const g = instance(id),
+  const g = firstPerson ? instance(id) : worldWeaponInstance(id),
     muzzle = g.getObjectByName("muzzle"),
     flash = new THREE.Sprite(
       new THREE.SpriteMaterial({
@@ -60,6 +66,10 @@ export function makeGun(id, firstPerson = false, team = "soldiers") {
     if (o.name === "bolt") bolts.push(o);
   });
   const support = joint(g, 0, 0, 0);
+  const payloadMeshes = [];
+  g.traverse((o) => {
+    if (o.isMesh) payloadMeshes.push(o);
+  });
   let supportRest, triggerHand;
   const viewHands = [];
   if (firstPerson) {
@@ -130,6 +140,7 @@ export function makeGun(id, firstPerson = false, team = "soldiers") {
     chargingHandle: g.getObjectByName("chargingHandle"),
     pin: g.getObjectByName("pullRing") || g.getObjectByName("pin"),
     spoon: g.getObjectByName("spoon"),
+    payloadMeshes,
     draw: 1,
     led: g.getObjectByName("led"),
   };
@@ -150,7 +161,11 @@ export function animateGun(
   for (const m of u.magazines) {
     if (!m.userData.restPosition) m.userData.restPosition = m.position.clone();
     m.position.copy(m.userData.restPosition);
-    if (!pose.tube) m.position.add(new THREE.Vector3(...pose.magazine));
+    if (!pose.tube) {
+      m.position.x += pose.magazine[0];
+      m.position.y += pose.magazine[1];
+      m.position.z += pose.magazine[2];
+    }
     m.rotation.x = pose.tube ? 0 : pose.magazineAngle;
   }
   for (const b of u.bolts) {
@@ -171,26 +186,42 @@ export function animateGun(
       u.support.userData.hand.rotation.copy(u.support.userData.handRest);
       u.support.userData.hand.rotation.x *= 1 - Math.max(pose.grab, pose.rack);
     }
-    if (w.type === "GRENADE" && action !== "throw") {
-      // The free hand rests low until it reaches for the pull ring.
-      u.support.position.x -= 0.12;
-      u.support.position.y -= 0.22;
-      u.support.position.z += 0.06;
-    }
-    if (action === "throw") {
-      const phase = Math.max(0, 1 - actionTime / GRENADE_THROW_SECONDS);
-      u.support.position.x -= phase * 0.15;
-      u.support.position.y -= phase * 0.18;
+    if (w.type === "GRENADE") {
+      const motion = action === "throw" ? throwPose(actionTime) : null;
+      const reach = motion?.reach || 0;
+      u.support.position.x -= 0.12 * (1 - reach) + (motion?.pin || 0) * 0.05;
+      u.support.position.y -= 0.22 * (1 - reach);
+      u.support.position.z += 0.06 * (1 - reach);
       if (u.pin) {
         u.pin.userData.restPosition ||= u.pin.position.clone();
         u.pin.position.copy(u.pin.userData.restPosition);
-        u.pin.position.x -= phase * 0.1;
+        u.pin.position.x -= (motion?.pin || 0) * 0.1;
+        u.pin.visible = !motion?.released;
       }
     }
     if (id === "bomb" && ["planting", "pickup"].includes(action)) {
       const device = equipmentPose(action, 1 - actionTime);
       u.support.position.y -= device.lower;
       u.support.position.z += device.tap;
+    }
+  }
+  if (w.type === "GRENADE") {
+    const motion = action === "throw" ? throwPose(actionTime) : null;
+    const released = !!motion?.released;
+    for (const mesh of u.payloadMeshes) mesh.visible = !released;
+    if (u.spoon) u.spoon.visible = !released;
+    const opening = smooth(((motion?.phase || 0) - 0.43) / 0.17);
+    for (const { hand, left } of u.viewHands) {
+      if (left) continue;
+      for (const finger of hand.userData.fingers) {
+        const angle = -0.8 * opening;
+        finger.rotation.y = angle;
+        // Rotate about the authored knuckle, not the wrist/group origin.
+        finger.position.x =
+          0.058 - (Math.cos(angle) * 0.058 + Math.sin(angle) * 0.013);
+        finger.position.z =
+          0.013 - (-Math.sin(angle) * 0.058 + Math.cos(angle) * 0.013);
+      }
     }
   }
   u.draw = Math.max(0, u.draw - dt * 4.5);
@@ -404,11 +435,16 @@ export function animatePlayer(m, p, t, dt) {
       a.setEffectiveTimeScale(Math.max(0.25, speed / (running ? 8.5 : 5.3)));
   }
   u.mixer.update(dt);
-  u.crouch += (Number(p.crouch) - u.crouch) * blend;
+  u.crouch += (stanceBlend(p) - u.crouch) * blend;
+  u.air = (u.air || 0) + ((p.grounded ? 0 : 1) - (u.air || 0)) * blend;
+  u.stridePhase = (u.stridePhase || 0) + speed * dt * 3;
   const c = u.crouch;
-  if (!u.wasGrounded && p.grounded) u.land = 0.045;
+  if (!u.wasGrounded && p.grounded && u.fallSpeed < -2)
+    u.landTarget = Math.min(0.045, -u.fallSpeed * 0.004);
   u.wasGrounded = p.grounded;
-  u.land *= Math.exp(-12 * dt);
+  u.fallSpeed = p.vy || 0;
+  u.land += ((u.landTarget || 0) - u.land) * (1 - Math.exp(-22 * dt));
+  u.landTarget = (u.landTarget || 0) * Math.exp(-12 * dt);
   const crouchDrop = u.rig?.crouchDrop ?? 0.5;
   // Fade pelvis breathing/gait bob out of a planted imported crouch. A few
   // millimetres of root motion otherwise keep its short-leg IK rocking at rest.
@@ -432,7 +468,8 @@ export function animatePlayer(m, p, t, dt) {
           .applyQuaternion(leg.quaternion)
           .add(leg.position)
           .lerp(directions.foot, c);
-        const step = Math.sin(t * 8 + i * Math.PI) * Math.min(1, speed / 2) * c;
+        const step =
+          Math.sin(u.stridePhase + i * Math.PI) * Math.min(1, speed / 2) * c;
         limbTarget.z += step * 0.12 * forward;
         limbTarget.x += step * 0.12 * strafe;
         limbTarget.y += Math.max(0, step) * 0.04;
@@ -443,7 +480,7 @@ export function animatePlayer(m, p, t, dt) {
         const stride = leg.rotation.x;
         leg.rotation.x *= forward;
         leg.rotation.z -= stride * strafe * 0.72;
-        u.knees[i].rotation.x += p.grounded ? 0 : -0.6;
+        u.knees[i].rotation.x -= u.air * 0.6;
       }
     } else {
       leg.rotation.x = leg.rotation.x * (1 - c * 0.7) + c * 1.22;
@@ -451,9 +488,7 @@ export function animatePlayer(m, p, t, dt) {
         (i ? 1 : -1) * c * 0.06 +
         Math.sin(t * 10 + i * Math.PI) * lateral * 0.2;
       u.knees[i].rotation.x =
-        u.knees[i].rotation.x * (1 - c * 0.8) -
-        c * 2.44 +
-        (p.grounded ? 0 : -0.6);
+        u.knees[i].rotation.x * (1 - c * 0.8) - c * 2.44 - u.air * 0.6;
     }
     if (u.ankles[i]) {
       footRotation
@@ -523,18 +558,34 @@ export function animatePlayer(m, p, t, dt) {
       node.rotation.x -= i === 1 && finger === 0 ? 0.55 : 1.12;
   }
   if (p.action === "throw" && (!u.rig || heldThrow)) {
-    const phase = Math.max(
-      0,
-      Math.min(1, 1 - p.actionTime / GRENADE_THROW_SECONDS),
+    const motion = throwPose(p.actionTime),
+      phase = motion.phase;
+    u.arms[1].rotation.x = THREE.MathUtils.lerp(
+      u.arms[1].rotation.x,
+      -2.35 + motion.swing * 1.7,
+      motion.arm,
     );
-    u.arms[1].rotation.set(-2.6 + phase * 2, 0, -0.1);
-    u.elbows[1].rotation.set(-0.55 * (1 - phase), 0, 0);
-    if (u.wrists[1]) u.wrists[1].quaternion.identity();
-    for (const finger of u.fingers[1]) finger.rotation.x = -(1 - phase) * 1.12;
-    u.weaponPivot.rotation.x -= 0.4;
+    u.arms[1].rotation.z = THREE.MathUtils.lerp(
+      u.arms[1].rotation.z,
+      -0.16,
+      motion.arm,
+    );
+    u.elbows[1].rotation.x = THREE.MathUtils.lerp(
+      u.elbows[1].rotation.x,
+      -0.8 * (1 - motion.swing),
+      motion.arm,
+    );
+    if (u.wrists[1])
+      u.wrists[1].quaternion.slerp(wristRotation.identity(), motion.arm);
+    for (const finger of u.fingers[1])
+      finger.rotation.x = THREE.MathUtils.lerp(
+        finger.rotation.x,
+        -(1 - smooth((phase - 0.43) / 0.17)) * 1.12,
+        motion.arm,
+      );
+    u.weaponPivot.rotation.x -= 0.4 * motion.arm;
     if (heldThrow) {
-      // The server has already created the projectile. This short wind-up is
-      // cosmetic: keep the held prop on its moving palm, then release it.
+      // Keep the prop on the palm until the authoritative release beat.
       u.weaponPivot.quaternion
         .copy(u.arms[1].quaternion)
         .multiply(u.elbows[1].quaternion);
@@ -549,23 +600,42 @@ export function animatePlayer(m, p, t, dt) {
         .multiply(u.weaponPivot.scale)
         .applyQuaternion(u.weaponPivot.quaternion);
       u.weaponPivot.position.copy(limbTarget).sub(ikTarget);
-      if (u.gun) u.gun.visible = phase < 0.62;
+      if (u.gun) u.gun.visible = !motion.released;
     }
   }
   if (p.hp <= 0) {
     u.death = Math.min(1, u.death + dt * 2.5);
-    u.body.rotation.z = u.death * 1.5;
-    u.body.position.y = u.death * (u.rig ? 0.2 : -0.05);
+    const fall = smooth(u.death);
+    u.body.rotation.z = THREE.MathUtils.lerp(u.body.rotation.z, 1.5, fall);
+    u.body.position.y = THREE.MathUtils.lerp(
+      u.body.position.y,
+      u.rig ? 0.2 : -0.05,
+      fall,
+    );
     u.label.visible = false;
     u.legs.forEach((l, i) => {
-      l.rotation.x = 0.18 + i * 0.2;
-      u.knees[i].rotation.x = 0.36 + i * 0.2;
-      u.ankles[i]?.quaternion.identity();
+      l.rotation.x = THREE.MathUtils.lerp(l.rotation.x, 0.18 + i * 0.2, fall);
+      u.knees[i].rotation.x = THREE.MathUtils.lerp(
+        u.knees[i].rotation.x,
+        0.36 + i * 0.2,
+        fall,
+      );
+      u.ankles[i]?.quaternion.slerp(wristRotation.identity(), fall);
     });
-    u.arms[0].rotation.set(-0.3, 0.2, -0.25);
-    u.arms[1].rotation.set(0.3, -0.1, 0.4);
-    for (const wrist of u.wrists) wrist?.quaternion.identity();
-    for (const finger of u.fingers.flat()) finger.rotation.x = -0.25;
+    for (const [i, target] of [
+      [0, [-0.3, 0.2, -0.25]],
+      [1, [0.3, -0.1, 0.4]],
+    ])
+      for (const [j, axis] of ["x", "y", "z"].entries())
+        u.arms[i].rotation[axis] = THREE.MathUtils.lerp(
+          u.arms[i].rotation[axis],
+          target[j],
+          fall,
+        );
+    for (const wrist of u.wrists)
+      wrist?.quaternion.slerp(wristRotation.identity(), fall);
+    for (const finger of u.fingers.flat())
+      finger.rotation.x = THREE.MathUtils.lerp(finger.rotation.x, -0.25, fall);
   } else {
     u.label.visible = true;
     u.label.position.y = u.labelHeight - c * crouchDrop;
